@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mdf"
+version = "0.1.0"
+description = "Molecular Data Frame"
+requires-python = ">=3.11"
+dependencies = [
+    "polars",
+    "pyarrow",
+    "typer",
+    "rich",
+    "sieve @ git+https://github.com/OrogenTX/sieve.git",
+]
+
+[project.scripts]
+mdf = "mdf:app"
+
+[tool.hatch.metadata]
+allow-direct-references = true
