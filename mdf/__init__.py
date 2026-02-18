@@ -1,4 +1,5 @@
 from enum import Enum
+from sieve import PW_Alert_Name
 import polars as ps
 from polars.exceptions import SchemaError
 from pathlib import Path
@@ -1183,8 +1184,8 @@ def sieve(
     ring_db: Optional[str] = Option(
         None, "-d", "--ring-db", help="path to the ring database"
     ),
-    PW_alerts: Optional[List[str]] = Option(
-        None,
+    PW_alerts: List[PW_Alert_Name] = Option(
+        [],
         "-P",
         "--PW-alerts",
         help="filter using one or more Pat Walters REOS alerts (multiple may be given)",
