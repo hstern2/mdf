@@ -881,11 +881,10 @@ class MDF:
         from sieve import Sieve, RING_DB
         if ring_db is None:
             ring_db = RING_DB
-        pd_df = self._df.select(["SMILES", "NAME"]).to_pandas()
+        pd_df = self._df.to_pandas()
         filtered_pd = Sieve(relaxed, unprecedented_rings, ring_db,
                             lilly_medchem_rules, PW_alerts)(pd_df)
-        surviving = ps.from_pandas(filtered_pd[["SMILES", "NAME"]])
-        return MDF(self._df.join(surviving, on=["SMILES", "NAME"], how="semi"))
+        return MDF(ps.from_pandas(filtered_pd))
 
 
 def show_help_and_exit_if_nothing(files: List[Path]):
@@ -1190,8 +1189,8 @@ def sieve(
         "--PW-alerts",
         help="filter using one or more Pat Walters REOS alerts (multiple may be given)",
     ),
-    stdin_fmt: StdinFmtOpt = MDFFormat.smi,
-    stdout_fmt: StdoutFmtOpt = MDFFormat.smi,
+    stdin_fmt: StdinFmtOpt = MDFFormat.csv,
+    stdout_fmt: StdoutFmtOpt = MDFFormat.csv,
 ):
     """filter molecules using the sieve library (Lilly Medchem Rules, Pat Walters alerts, ring filters)"""
     show_help_and_exit_if_nothing(files)
