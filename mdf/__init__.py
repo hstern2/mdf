@@ -351,7 +351,7 @@ class MDF:
         return cls(df)
 
     @classmethod
-    def cat(cls, mdfs: Iterable["MDF"], how: CatHow = CatHow.vertical):
+    def cat(cls, mdfs: Iterable["MDF"], how: CatHow = CatHow.diagonal):
         """concatenate multiple mdfs into one"""
         # Extract the underlying DataFrames from MDF objects
         dataframes = [mdf._df for mdf in mdfs]
@@ -394,7 +394,7 @@ class MDF:
 
     @classmethod
     def from_stdin_and_files(
-        cls, files: List[Path], stdin_fmt: MDFFormat, how: CatHow = CatHow.vertical
+        cls, files: List[Path], stdin_fmt: MDFFormat, how: CatHow = CatHow.diagonal
     ) -> "MDF":
         """create mdf by concatenating stdin (if not isatty) and files"""
         mdfs = []
@@ -918,7 +918,7 @@ def cat(
     stdin_fmt: StdinFmtOpt = MDFFormat.csv,
     stdout_fmt: StdoutFmtOpt = MDFFormat.csv,
     how: CatHow = Option(
-        CatHow.vertical,
+        CatHow.diagonal,
         "--how",
         "-H",
         help="type of concatenation: vertical, horizontal, diagonal",
@@ -1210,7 +1210,7 @@ def smi(
     files: FilesType = FilesArg,
     stdin_fmt: StdinFmtOpt = MDFFormat.csv,
     how: CatHow = Option(
-        CatHow.vertical,
+        CatHow.diagonal,
         "--how",
         "-H",
         help="type of concatenation: vertical, horizontal, diagonal",
