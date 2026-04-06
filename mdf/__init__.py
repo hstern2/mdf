@@ -698,37 +698,11 @@ class MDF:
 
     def diverse(self, smiles_col: str = "SMILES", threshold: float = 0.7) -> "MDF":
         """return a new mdf with diverse molecules, sampling rows in order but excluding molecules similar to already seen ones"""
-        # Lazy imports
-        try:
-            from rdkit.DataStructs import TanimotoSimilarity
-            from rdkit.Chem import AllChem, MolFromSmiles
-            from rdkit.Chem.MolStandardize.rdMolStandardize import TautomerEnumerator
-        except ImportError as e:
-            print(
-                f"RDKit is required for molecular similarity calculations: {e}",
-                file=sys.stderr,
-            )
-            raise typer.Exit(code=1)
+        TanimotoSimilarity, fingerprint = self._similarity_tools()
 
         if smiles_col not in self.columns:
             print(f"Column '{smiles_col}' not found in dataframe", file=sys.stderr)
             raise typer.Exit(code=1)
-
-        # Initialize fingerprint generator and tautomer enumerator
-        fpgen = AllChem.GetRDKitFPGenerator()
-        te = TautomerEnumerator()
-
-        def fingerprint(smi: str):
-            """Generate fingerprint for a SMILES string"""
-            try:
-                if smi is None or not str(smi).strip():
-                    return None
-                mol = MolFromSmiles(str(smi))
-                if mol is None:
-                    return None
-                return fpgen.GetFingerprint(te.Canonicalize(mol))
-            except (ValueError, TypeError, AttributeError):
-                return None
 
         def contains_similar(fp1, seen_fps):
             """Check if fp1 is similar to any fingerprint in seen_fps"""
@@ -761,23 +735,125 @@ class MDF:
         # Return filtered dataframe using boolean mask
         return MDF(self._df.filter(ps.Series(mask)))
 
-    def pX(self, column: str, newcol: str = "pIC50", unit: float = 1e-6) -> "MDF":
-        """return a new mdf with a pX column calculated as -log10(unit * x) where x is the value in the first column matching the regex pattern"""
+    def sims(
+        self,
+        to: "MDF",
+        smiles_col: str = "SMILES",
+        to_smiles_col: str = "SMILES",
+    ) -> "MDF":
+        """return a new mdf with additional columns tanimoto_similarity_to_NAME for molecules in another mdf"""
+        TanimotoSimilarity, fingerprint = self._similarity_tools()
+
+        if smiles_col not in self.columns:
+            print(f"Column '{smiles_col}' not found in dataframe", file=sys.stderr)
+            raise typer.Exit(code=1)
+
+        if to_smiles_col not in to.columns:
+            print(
+                f"Column '{to_smiles_col}' not found in target dataframe",
+                file=sys.stderr,
+            )
+            raise typer.Exit(code=1)
+
+        if "NAME" not in to.columns:
+            print("Column 'NAME' not found in target dataframe", file=sys.stderr)
+            raise typer.Exit(code=1)
+
+        # Prepare fingerprints for the target dataframe
+        to_smiles_series = to._df.get_column(to_smiles_col)
+        to_name_series = to._df.get_column("NAME")
+
+        target_fps = []
+        target_colnames = []
+
+        # Track counts to ensure unique and safe column names, even with duplicate or
+        # problematic NAME values.
+        name_counts = {}
+
+        for smi, raw_name in zip(to_smiles_series, to_name_series):
+            fp = fingerprint(smi)
+            if fp is None:
+                continue
+            target_fps.append(fp)
+            base_name = str(raw_name) if raw_name is not None else ""
+            # Sanitize NAME to make a safe column suffix
+            safe_name = re.sub(r"\W+", "_", base_name).strip("_") or "target"
+            count = name_counts.get(safe_name, 0)
+            name_counts[safe_name] = count + 1
+            if count > 0:
+                safe_name = f"{safe_name}_{count}"
+            target_colnames.append(f"tanimoto_similarity_to_{safe_name}")
+
+        if not target_fps:
+            print(
+                "No valid fingerprints could be generated from target dataframe",
+                file=sys.stderr,
+            )
+            raise typer.Exit(code=1)
+
+        # Prepare storage for similarity columns
+        n_rows = self._df.height
+        similarity_data = {colname: [None] * n_rows for colname in target_colnames}
+
+        smiles_series = self._df.get_column(smiles_col)
+
+        for i in range(n_rows):
+            smi = smiles_series[i]
+            fp = fingerprint(smi)
+            if fp is None:
+                continue
+            for colname, target_fp in zip(target_colnames, target_fps):
+                try:
+                    similarity_data[colname][i] = float(
+                        TanimotoSimilarity(fp, target_fp)
+                    )
+                except Exception:
+                    similarity_data[colname][i] = None
+
+        similarity_df = ps.DataFrame(similarity_data)
+        result_df = self._df.hstack(similarity_df)
+        return MDF(result_df)
+
+    _UNIT_MULTIPLIERS = {
+        "M": 1,
+        "mM": 1e-3,
+        "uM": 1e-6,
+        "µM": 1e-6,
+        "nM": 1e-9,
+        "pM": 1e-12,
+    }
+
+    @staticmethod
+    def _parse_unit_from_column(col_name: str) -> float:
+        """Parse a concentration unit from a column name. Looks for known unit strings (e.g. uM, nM) in the column name."""
+        import re
+        for unit_str, multiplier in MDF._UNIT_MULTIPLIERS.items():
+            if re.search(r'(?<![a-zA-Z])' + re.escape(unit_str) + r'(?![a-zA-Z])', col_name):
+                return multiplier
+        raise ValueError(
+            f"Could not determine unit from column name '{col_name}'. "
+            f"Expected one of: {', '.join(MDF._UNIT_MULTIPLIERS.keys())}"
+        )
+
+    def pX(self, column: str, newcol: str = "pIC50") -> "MDF":
+        """return a new mdf with a pX column calculated as -log10(unit * x), with the unit inferred from the matched column name"""
         import math
 
         # Find the first matching column
         matching_cols = self.matching_cols(column)
         col_name = matching_cols[0]
+        unit = self._parse_unit_from_column(col_name)
 
         def calculate_pX(value):
             """Calculate pX value: -log10(unit * x)"""
-            if value is None or not isinstance(value, (int, float)):
+            if value is None:
                 return None
             try:
+                value = float(value)
                 if value <= 0:
                     return None
                 return -math.log10(unit * value)
-            except (ValueError, OverflowError, ZeroDivisionError):
+            except (ValueError, TypeError, OverflowError, ZeroDivisionError):
                 return None
 
         # Add the new column with pX calculations
@@ -843,6 +919,38 @@ class MDF:
         )
 
         return MDF(new_df)
+
+    @staticmethod
+    def _similarity_tools():
+        """Return RDKit TanimotoSimilarity function and a fingerprint generator"""
+        try:
+            from rdkit.DataStructs import TanimotoSimilarity
+            from rdkit.Chem import AllChem, MolFromSmiles
+            from rdkit.Chem.MolStandardize.rdMolStandardize import (
+                TautomerEnumerator,
+            )
+        except ImportError as e:
+            print(
+                f"RDKit is required for molecular similarity calculations: {e}",
+                file=sys.stderr,
+            )
+            raise typer.Exit(code=1)
+
+        fpgen = AllChem.GetRDKitFPGenerator()
+        te = TautomerEnumerator()
+
+        def fingerprint(smi: str):
+            try:
+                if smi is None or not str(smi).strip():
+                    return None
+                mol = MolFromSmiles(str(smi))
+                if mol is None:
+                    return None
+                return fpgen.GetFingerprint(te.Canonicalize(mol))
+            except (ValueError, TypeError, AttributeError):
+                return None
+
+        return TanimotoSimilarity, fingerprint
 
     def ttsplit(self, fraction: float = 0.9, prefix: str = "a"):
         """perform a random test-train split and write to separate files with the given prefix
@@ -1097,7 +1205,7 @@ def props(
 @app.command(name="pX")
 def pX(
     column: str = Argument(
-        ..., help="Regex pattern to match column name containing values to convert"
+        ..., help="Regex pattern to match column name containing values to convert (unit is inferred from the column name, e.g. uM, nM, mM)"
     ),
     files: FilesType = FilesArg,
     newcol: str = Option(
@@ -1106,18 +1214,12 @@ def pX(
         "-n",
         help="Name of the new pX column to create",
     ),
-    unit: float = Option(
-        1e-6,
-        "--unit",
-        "-u",
-        help="Unit multiplier for the calculation (default: 1e-6 for micromolar)",
-    ),
     stdin_fmt: StdinFmtOpt = MDFFormat.csv,
     stdout_fmt: StdoutFmtOpt = MDFFormat.csv,
 ):
-    """calculate a new pX column as -log10(unit * x) where x is the value in the first column matching the regex pattern"""
+    """calculate a new pX column as -log10(unit * x), with the unit (M, mM, uM, nM, pM) inferred from the matched column name"""
     show_help_and_exit_if_nothing(files)
-    MDF.from_stdin_and_files(files, stdin_fmt).pX(column, newcol, unit).write_file(stdout, stdout_fmt)
+    MDF.from_stdin_and_files(files, stdin_fmt).pX(column, newcol).write_file(stdout, stdout_fmt)
 
 
 @app.command()
@@ -1203,6 +1305,38 @@ def sieve(
         ring_db=ring_db_path,
         PW_alerts=PW_alerts or [],
     ).write_file(stdout, stdout_fmt)
+
+
+@app.command()
+def sims(
+    files: FilesType = FilesArg,
+    to: Path = Option(
+        ...,
+        "-t",
+        "--to",
+        help="Target dataframe file (.csv or .smi) to compute similarities to",
+    ),
+    smiles_col: str = Option(
+        "SMILES",
+        "-s",
+        "--smiles-col",
+        help="Column name containing SMILES in the primary dataframe",
+    ),
+    to_smiles_col: str = Option(
+        "SMILES",
+        "--to-smiles-col",
+        help="Column name containing SMILES in the target dataframe",
+    ),
+    stdin_fmt: StdinFmtOpt = MDFFormat.csv,
+    stdout_fmt: StdoutFmtOpt = MDFFormat.csv,
+):
+    """add Tanimoto similarity columns to the input dataframe for each molecule in a target dataframe"""
+    show_help_and_exit_if_nothing(files)
+    mdf = MDF.from_stdin_and_files(files, stdin_fmt)
+    to_mdf = MDF.from_file(to)
+    mdf.sims(to_mdf, smiles_col=smiles_col, to_smiles_col=to_smiles_col).write_file(
+        stdout, stdout_fmt
+    )
 
 
 @app.command()
