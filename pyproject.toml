@@ -13,6 +13,8 @@ dependencies = [
     "typer",
     "rich",
     "sieve @ git+https://github.com/OrogenTX/sieve.git",
+    "rdkit",
+    "matplotlib",
 ]
 
 [project.scripts]
