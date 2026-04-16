@@ -740,6 +740,7 @@ class MDF:
         to: "MDF",
         smiles_col: str = "SMILES",
         to_smiles_col: str = "SMILES",
+        sort: bool = False,
     ) -> "MDF":
         """return a new mdf with additional columns tanimoto_similarity_to_NAME for molecules in another mdf"""
         TanimotoSimilarity, fingerprint = self._similarity_tools()
@@ -812,6 +813,8 @@ class MDF:
 
         similarity_df = ps.DataFrame(similarity_data)
         result_df = self._df.hstack(similarity_df)
+        if sort:
+            result_df = result_df.sort(target_colnames[0], descending=True, nulls_last=True)
         return MDF(result_df)
 
     _UNIT_MULTIPLIERS = {
@@ -1327,6 +1330,12 @@ def sims(
         "--to-smiles-col",
         help="Column name containing SMILES in the target dataframe",
     ),
+    sort: bool = Option(
+        False,
+        "-S",
+        "--sort",
+        help="Sort by the first new Tanimoto similarity column (descending, most similar at the top)",
+    ),
     stdin_fmt: StdinFmtOpt = MDFFormat.csv,
     stdout_fmt: StdoutFmtOpt = MDFFormat.csv,
 ):
@@ -1334,9 +1343,9 @@ def sims(
     show_help_and_exit_if_nothing(files)
     mdf = MDF.from_stdin_and_files(files, stdin_fmt)
     to_mdf = MDF.from_file(to)
-    mdf.sims(to_mdf, smiles_col=smiles_col, to_smiles_col=to_smiles_col).write_file(
-        stdout, stdout_fmt
-    )
+    mdf.sims(
+        to_mdf, smiles_col=smiles_col, to_smiles_col=to_smiles_col, sort=sort
+    ).write_file(stdout, stdout_fmt)
 
 
 @app.command()
