@@ -212,77 +212,90 @@ class MDF:
     def viz(
         self,
         smiles_col: str = "SMILES",
-        mols_per_row: int = 4,
         size: tuple = (250, 250),
         title: str = "molecules",
     ):
-        """visualize molecules in a grid using RDKit, with NAME as labels"""
-        # Lazy imports
+        """write an HTML table of SVG molecule images alongside dataframe columns and open it in the browser"""
         try:
             from rdkit import Chem
-            from rdkit.Chem import AllChem, Draw
-            import matplotlib.pyplot as plt
+            from rdkit.Chem import AllChem
+            from rdkit.Chem.Draw import rdMolDraw2D
         except ImportError as e:
-            print(
-                f"RDKit and matplotlib are required for visualization: {e}",
-                file=sys.stderr,
-            )
+            print(f"RDKit is required for visualization: {e}", file=sys.stderr)
             raise typer.Exit(code=1)
 
-        # Check required columns
+        import tempfile, webbrowser
+        from html import escape
+
         if smiles_col not in self.columns:
             print(f"Column '{smiles_col}' not found in dataframe", file=sys.stderr)
             raise typer.Exit(code=1)
 
-        if "NAME" not in self.columns:
-            print("Column 'NAME' not found in dataframe", file=sys.stderr)
-            raise typer.Exit(code=1)
+        def render_svg(smi):
+            if not smi:
+                return None
+            mol = Chem.MolFromSmiles(str(smi))
+            if mol is None:
+                return None
+            AllChem.Compute2DCoords(mol)
+            drawer = rdMolDraw2D.MolDraw2DSVG(size[0], size[1])
+            drawer.DrawMolecule(mol)
+            drawer.FinishDrawing()
+            svg = drawer.GetDrawingText()
+            return re.sub(r"<\?xml[^?]*\?>", "", svg, count=1).lstrip()
 
-        # Extract SMILES and NAME
-        smiles_list = []
-        names_list = []
-        for row in self._df.iter_rows(named=True):
-            smiles = row[smiles_col]
-            name = row.get("NAME", "")
-            if smiles:
-                smiles_list.append(smiles)
-                names_list.append(str(name) if name else "")
-
-        if not smiles_list:
-            print("No SMILES found to visualize", file=sys.stderr)
-            raise typer.Exit(code=1)
-
-        # Create molecules from SMILES
-        mols = []
-        valid_names = []
-        for s, n in zip(smiles_list, names_list):
-            m = Chem.MolFromSmiles(s)
-            if m is None:
-                print(f"Warning: Invalid SMILES '{s}', skipping", file=sys.stderr)
-                continue
-            AllChem.Compute2DCoords(m)
-            mols.append(m)
-            valid_names.append(n)
-
-        if not mols:
-            print("No valid molecules to visualize", file=sys.stderr)
-            raise typer.Exit(code=1)
-
-        # Create grid image with NAME as legends
-        img = Draw.MolsToGridImage(
-            mols,
-            molsPerRow=mols_per_row,
-            subImgSize=size,
-            legends=valid_names,
+        cols = list(self.columns)
+        header = "<th>structure</th>" + "".join(
+            f"<th>{escape(c)}</th>" for c in cols
         )
 
-        # Display using matplotlib
-        plt.figure()
-        plt.imshow(img)
-        plt.axis("off")
-        plt.title(title)
-        plt.tight_layout()
-        plt.show()
+        body_rows = []
+        for row in self._df.iter_rows(named=True):
+            svg = render_svg(row.get(smiles_col)) or ""
+            cells = [f'<td class="mol">{svg}</td>']
+            for c in cols:
+                v = row.get(c)
+                cells.append(f"<td>{escape('' if v is None else str(v))}</td>")
+            body_rows.append("<tr>" + "".join(cells) + "</tr>")
+
+        if not body_rows:
+            print("No rows to visualize", file=sys.stderr)
+            raise typer.Exit(code=1)
+
+        doc = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>{escape(title)}</title>
+<style>
+body {{ font-family: sans-serif; margin: 1em; }}
+h1 {{ font-size: 1.2em; }}
+table {{ border-collapse: collapse; }}
+th, td {{ border: 1px solid #ddd; padding: 4px; vertical-align: middle; }}
+th {{ background: #f4f4f4; text-align: left; position: sticky; top: 0; }}
+td.mol {{ text-align: center; }}
+td.mol svg {{ display: block; }}
+</style>
+</head>
+<body>
+<h1>{escape(title)}</h1>
+<table>
+<thead><tr>{header}</tr></thead>
+<tbody>
+{''.join(body_rows)}
+</tbody>
+</table>
+</body>
+</html>
+"""
+
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".html", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(doc)
+            path = f.name
+
+        webbrowser.open(f"file://{path}")
 
     def matching_cols(self, pattern: str) -> List[str]:
         """get list of column names matching the regex pattern"""
@@ -1455,12 +1468,6 @@ def viz(
         "--smiles-col",
         help="Column name containing SMILES to visualize",
     ),
-    mols_per_row: int = Option(
-        4,
-        "-r",
-        "--mols-per-row",
-        help="Number of molecules per row in the grid",
-    ),
     size: str = Option(
         "250,250",
         "--size",
@@ -1474,11 +1481,10 @@ def viz(
     ),
     stdin_fmt: StdinFmtOpt = MDFFormat.csv,
 ):
-    """visualize molecules in a grid using RDKit, with NAME as labels"""
+    """write an HTML table of SVG molecule images alongside dataframe columns and open it in the browser"""
     show_help_and_exit_if_nothing(files)
     mdf = MDF.from_stdin_and_files(files, stdin_fmt)
 
-    # Parse size
     try:
         width, height = map(int, size.split(","))
         size_tuple = (width, height)
@@ -1489,7 +1495,7 @@ def viz(
         )
         raise typer.Exit(code=1)
 
-    mdf.viz(smiles_col=smiles_col, mols_per_row=mols_per_row, size=size_tuple, title=title)
+    mdf.viz(smiles_col=smiles_col, size=size_tuple, title=title)
 
 
 if __name__ == "__main__":
