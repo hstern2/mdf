@@ -17,6 +17,7 @@ class MDFFormat(str, Enum):
 
     csv = "csv"
     smi = "smi"
+    sdf = "sdf"
     viz = "viz"
 
 
@@ -198,13 +199,8 @@ class MDF:
                     print(f"{row['SMILES']} {row['NAME']}", file=file)
             else:
                 raise ValueError(f"Unknown fmt: {fmt}")
-        except (BrokenPipeError, OSError) as e:
-            # Handle the case where the output pipe is closed (e.g., head, grep)
-            # This includes both Python's BrokenPipeError and OS-level broken pipe errors
-            if "Broken pipe" in str(e) or e.errno == 32:  # EPIPE = 32
-                pass  # Normal behavior when pipe is closed early
-            else:
-                raise  # Re-raise other OSErrors
+        except BrokenPipeError:
+            pass  # downstream pipe closed early (e.g. head, grep)
         finally:
             if should_close:
                 file.close()
@@ -329,40 +325,58 @@ td.mol svg {{ display: block; }}
 
     @classmethod
     def from_smi(cls, fn):
-        """create mdf from smiles file"""
+        """create mdf from smiles file (one SMILES [NAME] per line)"""
         if isinstance(fn, (str, Path)):
             with open(fn) as f:
                 lines = f.readlines()
         else:
             lines = fn.readlines()
 
-        # Parse each line: first non-whitespace sequence is SMILES, rest is NAME
-        parsed_lines = []
+        smiles, names = [], []
         for line in lines:
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
+            parts = line.split(None, 1)
+            smiles.append(parts[0])
+            names.append(parts[1] if len(parts) > 1 else "")
 
-            # Split on first whitespace: SMILES is everything before first whitespace,
-            # NAME is everything after (including any subsequent whitespace)
-            parts = line.split(None, 1)  # split on any whitespace, max 1 split
-            if len(parts) == 1:
-                # Only SMILES, no NAME
-                smiles = parts[0]
-                name = ""
-            else:
-                # SMILES and NAME
-                smiles = parts[0]
-                name = parts[1]  # This preserves any whitespace within the name
+        return cls(ps.DataFrame(
+            {"SMILES": smiles, "NAME": names},
+            schema={"SMILES": ps.Utf8, "NAME": ps.Utf8},
+        ))
 
-            parsed_lines.append(f"{smiles}\t{name}")
+    @classmethod
+    def from_sdf(cls, f):
+        """create mdf from SDF file; produces NAME, SMILES, FILE columns plus any SDF tags"""
+        try:
+            from rdkit.Chem import SDMolSupplier, ForwardSDMolSupplier, MolToSmiles
+        except ImportError as e:
+            print(f"RDKit is required for SDF input: {e}", file=sys.stderr)
+            raise typer.Exit(code=1)
 
-        # Create DataFrame from parsed lines using tab separator
-        smi_buf = io.StringIO("\n".join(parsed_lines))
-        df = ps.read_csv(
-            smi_buf, separator="\t", has_header=False, new_columns=["SMILES", "NAME"]
-        )
-        return cls(df)
+        if isinstance(f, (str, Path)):
+            filename = str(f)
+            supplier = SDMolSupplier(filename)
+        else:
+            filename = getattr(f, "name", "<stdin>")
+            data = f.read()
+            if isinstance(data, str):
+                data = data.encode()
+            supplier = ForwardSDMolSupplier(io.BytesIO(data))
+
+        rows = []
+        for m in supplier:
+            if m is None:
+                continue
+            d = {
+                "NAME": m.GetProp("_Name") if m.HasProp("_Name") else "",
+                "SMILES": MolToSmiles(m),
+                "FILE": filename,
+            }
+            d.update(m.GetPropsAsDict())
+            rows.append(d)
+        return cls(ps.DataFrame(rows))
 
     @classmethod
     def cat(cls, mdfs: Iterable["MDF"], how: CatHow = CatHow.diagonal):
@@ -381,20 +395,24 @@ td.mol svg {{ display: block; }}
 
     @classmethod
     def from_file(cls, f, fmt: MDFFormat = None):
-        """create mdf from file, automatically detecting fmt"""
+        """create mdf from file, automatically detecting fmt from suffix"""
         if fmt is None:
-            if hasattr(f, "name") and str(f.name).endswith(".smi"):
-                fmt = MDFFormat.smi
-            elif isinstance(f, (str, Path)) and str(f).endswith(".smi"):
-                fmt = MDFFormat.smi
+            if hasattr(f, "name"):
+                suffix = Path(f.name).suffix
+            elif isinstance(f, (str, Path)):
+                suffix = Path(f).suffix
             else:
-                fmt = MDFFormat.csv
+                suffix = ""
+            fmt = {".smi": MDFFormat.smi, ".sdf": MDFFormat.sdf}.get(
+                suffix, MDFFormat.csv
+            )
+        if fmt == MDFFormat.csv:
+            return cls.from_csv(f)
         if fmt == MDFFormat.smi:
             return cls.from_smi(f)
-        elif fmt == MDFFormat.csv:
-            return cls.from_csv(f)
-        else:
-            raise ValueError(f"Unknown fmt: {fmt}")
+        if fmt == MDFFormat.sdf:
+            return cls.from_sdf(f)
+        raise ValueError(f"Unknown fmt: {fmt}")
 
     @classmethod
     def from_files(cls, files: Union[None, Iterable[Path]]) -> "MDF":
@@ -407,22 +425,27 @@ td.mol svg {{ display: block; }}
         return cls.cat(mdfs)
 
     @classmethod
+    def mdfs_from_stdin_and_files(
+        cls, files: Optional[List[Path]], stdin_fmt: MDFFormat
+    ) -> List["MDF"]:
+        """return a list of MDFs read from stdin (if not isatty) and files"""
+        mdfs = []
+        if not stdin.isatty():
+            stdin_data = stdin.read()
+            if stdin_data.strip():
+                mdfs.append(cls.from_file(io.StringIO(stdin_data), stdin_fmt))
+        if files:
+            mdfs.extend(cls.from_file(f) for f in files)
+        return mdfs
+
+    @classmethod
     def from_stdin_and_files(
         cls, files: List[Path], stdin_fmt: MDFFormat, how: CatHow = CatHow.diagonal
     ) -> "MDF":
         """create mdf by concatenating stdin (if not isatty) and files"""
-        mdfs = []
-        if not stdin.isatty():
-            # Read all stdin into a seekable buffer
-            stdin_data = stdin.read()
-            # Only process stdin if it's not empty
-            if stdin_data.strip():
-                stdin_buf = io.StringIO(stdin_data)
-                mdfs.append(cls.from_file(stdin_buf, stdin_fmt))
-        if files:
-            mdfs.extend([cls.from_file(f) for f in files])
+        mdfs = cls.mdfs_from_stdin_and_files(files, stdin_fmt)
         if not mdfs:
-            return cls(ps.DataFrame())  # Return empty MDF if no input
+            return cls(ps.DataFrame())
         return cls.cat(mdfs, how=how)
 
     @classmethod
@@ -612,7 +635,6 @@ td.mol svg {{ display: block; }}
 
     def props(self, smiles_col: str = "SMILES", digits: int = 3) -> "MDF":
         """return a new mdf with molecular properties calculated from SMILES in the specified column"""
-        # Lazy imports
         try:
             from rdkit import Chem
             from rdkit.Chem.QED import qed
@@ -624,24 +646,19 @@ td.mol svg {{ display: block; }}
                 HeavyAtomCount,
                 NumRotatableBonds,
             )
-            import os
-
-            # Import sascorer with error handling
-            try:
-                sys.path.append(os.path.join(Chem.RDConfig.RDContribDir, "SA_Score"))
-                import sascorer
-            except (ImportError, AttributeError):
-                print(
-                    "Warning: SA_Score not available, using dummy values",
-                    file=sys.stderr,
-                )
-                sascorer = None
         except ImportError as e:
             print(
                 f"RDKit is required for molecular property calculations: {e}",
                 file=sys.stderr,
             )
             raise typer.Exit(code=1)
+
+        try:
+            sys.path.append(f"{Chem.RDConfig.RDContribDir}/SA_Score")
+            import sascorer
+        except (ImportError, AttributeError):
+            print("Warning: SA_Score not available, using dummy values", file=sys.stderr)
+            sascorer = None
 
         if smiles_col not in self.columns:
             print(f"Column '{smiles_col}' not found in dataframe", file=sys.stderr)
@@ -842,7 +859,6 @@ td.mol svg {{ display: block; }}
     @staticmethod
     def _parse_unit_from_column(col_name: str) -> float:
         """Parse a concentration unit from a column name. Looks for known unit strings (e.g. uM, nM) in the column name."""
-        import re
         for unit_str, multiplier in MDF._UNIT_MULTIPLIERS.items():
             if re.search(r'(?<![a-zA-Z])' + re.escape(unit_str) + r'(?![a-zA-Z])', col_name):
                 return multiplier
@@ -853,8 +869,6 @@ td.mol svg {{ display: block; }}
 
     def pX(self, column: str, newcol: str = "pIC50") -> "MDF":
         """return a new mdf with a pX column calculated as -log10(unit * x), with the unit inferred from the matched column name"""
-        import math
-
         # Find the first matching column
         matching_cols = self.matching_cols(column)
         col_name = matching_cols[0]
@@ -891,35 +905,17 @@ td.mol svg {{ display: block; }}
             print("Column 'NAME' not found in dataframe", file=sys.stderr)
             raise typer.Exit(code=1)
 
-        # Convert date column to datetime for proper sorting
-        # First, try to infer the date format and convert
-        try:
-            df_with_datetime = self._df.with_columns(
-                ps.col(date_col)
-                .str.to_datetime(strict=False)
-                .alias("__temp_datetime__")
-            )
-        except:
-            # If datetime conversion fails, try to sort as string (fallback)
-            print(
-                f"Warning: Could not parse dates in column '{date_col}', sorting as strings",
-                file=sys.stderr,
-            )
-            df_with_datetime = self._df.with_columns(
-                ps.col(date_col).alias("__temp_datetime__")
-            )
+        # Parse string dates to datetime so sorting is chronological; other types sort as-is.
+        col = ps.col(date_col)
+        sort_key = col.str.to_datetime(strict=False) if self._df.schema[date_col] == ps.Utf8 else col
 
-        # Group by NAME and get the row with the maximum date for each group
-        result = (
-            df_with_datetime.sort(
-                "__temp_datetime__", descending=True
-            )  # Sort by date descending (most recent first)
+        return MDF(
+            self._df.with_columns(sort_key.alias("__sort__"))
+            .sort("__sort__", descending=True)
             .group_by("NAME", maintain_order=True)
-            .first()  # Take the first (most recent) row for each NAME
-            .drop("__temp_datetime__")  # Remove the temporary datetime column
+            .first()
+            .drop("__sort__")
         )
-
-        return MDF(result)
 
     def canon(self, smiles_col: str = "SMILES") -> "MDF":
         """return a new mdf with canonical SMILES in the specified column"""
@@ -996,10 +992,6 @@ td.mol svg {{ display: block; }}
         print(f"Train set: {train_size} rows -> {train_filename}")
         print(f"Test set: {self.height - train_size} rows -> {test_filename}")
 
-    def colnames(self):
-        """return the list of column names"""
-        return list(self.columns)
-
     def sieve(self, lilly_medchem_rules=False, relaxed=False,
               unprecedented_rings=False, ring_db=None, PW_alerts=[]):
         """filter molecules using the sieve library"""
@@ -1061,7 +1053,7 @@ def colnames(
     """print column names, one per line"""
     show_help_and_exit_if_nothing(files)
     mdf = MDF.from_stdin_and_files(files, stdin_fmt)
-    for col in mdf.colnames():
+    for col in mdf.columns:
         print(col)
 
 
@@ -1137,14 +1129,7 @@ def merge(
 ):
     """merge multiple mdf files on a column, removing duplicate columns except for the key"""
     show_help_and_exit_if_nothing(files)
-    # Get individual MDFs from stdin and files
-    mdfs = []
-    if not stdin.isatty():
-        stdin_data = stdin.read()
-        stdin_buf = io.StringIO(stdin_data)
-        mdfs.append(MDF.from_file(stdin_buf, stdin_format))
-    if files:
-        mdfs.extend([MDF.from_file(f) for f in files])
+    mdfs = MDF.mdfs_from_stdin_and_files(files, stdin_format)
     MDF.merge(mdfs, on=on, how=how).write_file(stdout, stdout_format)
 
 
@@ -1499,9 +1484,6 @@ def viz(
 
 
 if __name__ == "__main__":
-    import sys
-
-    # If no arguments provided, show help
     if len(sys.argv) == 1:
         app(["--help"])
     else:
