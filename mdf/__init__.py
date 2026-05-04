@@ -1,5 +1,4 @@
 from enum import Enum
-from sieve import PW_Alert_Name
 import polars as ps
 from polars.exceptions import SchemaError
 from pathlib import Path
@@ -88,6 +87,40 @@ def format_number(value, digits: int):
         return round(value * scale) / scale
     except (ValueError, OverflowError, ZeroDivisionError):
         return value
+
+
+
+def _nice_ticks(lo, hi, target=6):
+    if lo == hi:
+        lo, hi = lo - 1, hi + 1
+    span = hi - lo
+    raw_step = span / target
+    mag = 10 ** math.floor(math.log10(raw_step))
+    step = min([1, 2, 2.5, 5, 10], key=lambda s: abs(s * mag - raw_step)) * mag
+    start = math.floor(lo / step) * step
+    ticks, t = [], start
+    while t <= hi + step * 0.01:
+        ticks.append(round(t, 10))
+        t += step
+    if ticks[-1] < hi:
+        ticks.append(round(t, 10))
+    return ticks[0], ticks[-1], ticks
+
+
+def _fmt_tick(v):
+    if not math.isfinite(v):
+        return str(v)
+    if v == int(v):
+        return str(int(v))
+    return f"{v:.3g}"
+
+
+def _open_html(doc: str):
+    import tempfile, webbrowser
+    with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False, encoding="utf-8") as f:
+        f.write(doc)
+        path = f.name
+    webbrowser.open(f"file://{path}")
 
 
 def _version_callback(value: bool):
@@ -220,7 +253,6 @@ class MDF:
             print(f"RDKit is required for visualization: {e}", file=sys.stderr)
             raise typer.Exit(code=1)
 
-        import tempfile, webbrowser
         from html import escape
 
         if smiles_col not in self.columns:
@@ -285,13 +317,97 @@ td.mol svg {{ display: block; }}
 </html>
 """
 
-        with tempfile.NamedTemporaryFile(
-            "w", suffix=".html", delete=False, encoding="utf-8"
-        ) as f:
-            f.write(doc)
-            path = f.name
+        _open_html(doc)
 
-        webbrowser.open(f"file://{path}")
+    def plot(self, x_col: str, y_cols: List[str], title: str = ""):
+        """generate a scatter plot and open it in the browser"""
+        from html import escape
+
+        COLORS = [
+            "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+            "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+        ]
+
+        series = []
+        for y_col in y_cols:
+            sub = self._df.select([x_col, y_col]).cast(ps.Float64, strict=False).drop_nulls()
+            if sub.is_empty():
+                print(f"No numeric data for column '{y_col}'", file=sys.stderr)
+                continue
+            xs_s, ys_s = sub[x_col], sub[y_col]
+            r = sub.select(ps.corr(x_col, y_col)).item()
+            series.append((y_col, xs_s.to_list(), ys_s.to_list(), r))
+
+        if not series:
+            print("No data to plot", file=sys.stderr)
+            raise typer.Exit(code=1)
+
+        all_x = [x for _, xs, _, _ in series for x in xs]
+        all_y = [y for _, _, ys, _ in series for y in ys]
+        x_min, x_max, x_ticks = _nice_ticks(min(all_x), max(all_x))
+        y_min, y_max, y_ticks = _nice_ticks(min(all_y), max(all_y))
+
+        W, H = 740, 500
+        ml, mr, mt, mb = 70, 210 if len(series) > 1 else 30, 40, 55
+        pw, ph = W - ml - mr, H - mt - mb
+
+        def to_svg(x, y):
+            px = ml + (x - x_min) / (x_max - x_min) * pw
+            py = mt + ph - (y - y_min) / (y_max - y_min) * ph
+            return px, py
+
+        els = []
+        els.append(f'<rect x="{ml}" y="{mt}" width="{pw}" height="{ph}" fill="#fafafa" stroke="#ccc"/>')
+
+        for t in x_ticks:
+            px, py = to_svg(t, y_min)
+            els.append(f'<line x1="{px:.1f}" y1="{mt}" x2="{px:.1f}" y2="{mt+ph}" stroke="#eee"/>')
+            els.append(f'<line x1="{px:.1f}" y1="{py:.1f}" x2="{px:.1f}" y2="{py+5:.1f}" stroke="#555"/>')
+            els.append(f'<text x="{px:.1f}" y="{py+18:.1f}" text-anchor="middle" font-size="11" fill="#444">{_fmt_tick(t)}</text>')
+        for t in y_ticks:
+            px, py = to_svg(x_min, t)
+            els.append(f'<line x1="{ml}" y1="{py:.1f}" x2="{ml+pw}" y2="{py:.1f}" stroke="#eee"/>')
+            els.append(f'<line x1="{px:.1f}" y1="{py:.1f}" x2="{px-5:.1f}" y2="{py:.1f}" stroke="#555"/>')
+            els.append(f'<text x="{px-8:.1f}" y="{py+4:.1f}" text-anchor="end" font-size="11" fill="#444">{_fmt_tick(t)}</text>')
+
+        els.append(f'<line x1="{ml}" y1="{mt+ph}" x2="{ml+pw}" y2="{mt+ph}" stroke="#555" stroke-width="1.5"/>')
+        els.append(f'<line x1="{ml}" y1="{mt}" x2="{ml}" y2="{mt+ph}" stroke="#555" stroke-width="1.5"/>')
+
+        cx = ml + pw / 2
+        els.append(f'<text x="{cx:.1f}" y="{H-8}" text-anchor="middle" font-size="13" fill="#333">{escape(x_col)}</text>')
+        cy = mt + ph / 2
+        if len(series) == 1:
+            y_col_name, _, _, r = series[0]
+            r_str = f" (r={r:.3f})" if not math.isnan(r) else ""
+            y_label = escape(y_col_name) + r_str
+        else:
+            y_label = ""
+        if y_label:
+            els.append(f'<text transform="rotate(-90,16,{cy:.1f})" x="16" y="{cy:.1f}" text-anchor="middle" font-size="13" fill="#333">{y_label}</text>')
+        if title:
+            els.append(f'<text x="{W/2:.1f}" y="24" text-anchor="middle" font-size="15" font-weight="bold" fill="#222">{escape(title)}</text>')
+
+        for i, (y_col, xs_data, ys_data, _) in enumerate(series):
+            color = COLORS[i % len(COLORS)]
+            for x, y in zip(xs_data, ys_data):
+                px, py = to_svg(x, y)
+                els.append(f'<circle cx="{px:.1f}" cy="{py:.1f}" r="4" fill="{color}" fill-opacity="0.65" stroke="{color}" stroke-width="0.5"/>')
+
+        if len(series) > 1:
+            lx, ly = ml + pw + 15, mt + 10
+            for i, (y_col, _, _, r) in enumerate(series):
+                color = COLORS[i % len(COLORS)]
+                r_str = f"r={r:.3f}" if not math.isnan(r) else "r=N/A"
+                els.append(f'<rect x="{lx}" y="{ly + i*22}" width="12" height="12" fill="{color}" fill-opacity="0.8"/>')
+                els.append(f'<text x="{lx+16}" y="{ly + i*22 + 10}" font-size="11" fill="#333">{escape(y_col)} ({r_str})</text>')
+
+        svg = f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}">\n{"".join(els)}\n</svg>'
+        doc = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>{escape(title)}</title>
+<style>body {{ font-family: sans-serif; margin: 2em; background: #fff; }}</style>
+</head><body>{svg}</body></html>"""
+
+        _open_html(doc)
 
     def matching_cols(self, pattern: str) -> List[str]:
         """get list of column names matching the regex pattern"""
@@ -1181,6 +1297,31 @@ def pareto(
 
 
 @app.command()
+def plot(
+    files: FilesType = FilesArg,
+    x_col: Annotated[str, Option("-x", "--x-col", help="Regex for x-axis column")] = ...,
+    y_cols: Annotated[Optional[List[str]], Option("-y", "--y-col", help="Regex for y-axis columns (repeatable)")] = None,
+    title: Annotated[str, Option("-t", "--title", help="Plot title (omit for no title)")] = "",
+    stdin_fmt: StdinFmtOpt = MDFFormat.csv,
+):
+    """scatter plot of columns matching -x (x axis) vs -y (y axis, repeatable); shows Pearson R in legend"""
+    show_help_and_exit_if_nothing(files)
+    mdf = MDF.from_stdin_and_files(files, stdin_fmt)
+    x_matches = mdf.matching_cols(x_col)
+    if len(x_matches) > 1:
+        print(f"Warning: multiple columns match '{x_col}', using '{x_matches[0]}'", file=sys.stderr)
+    x = x_matches[0]
+    y_patterns = y_cols or []
+    if not y_patterns:
+        print("At least one -y pattern is required", file=sys.stderr)
+        raise typer.Exit(code=1)
+    ys = []
+    for pat in y_patterns:
+        ys.extend(mdf.matching_cols(pat))
+    mdf.plot(x_col=x, y_cols=ys, title=title)
+
+
+@app.command()
 def props(
     files: FilesType = FilesArg,
     smiles_col: str = Option(
@@ -1287,24 +1428,32 @@ def sieve(
     ring_db: Optional[str] = Option(
         None, "-d", "--ring-db", help="path to the ring database"
     ),
-    PW_alerts: List[PW_Alert_Name] = Option(
+    PW_alerts: List[str] = Option(
         [],
         "-P",
         "--PW-alerts",
-        help="filter using one or more Pat Walters REOS alerts (multiple may be given)",
+        help="filter using one or more Pat Walters REOS alerts (multiple may be given): all, Glaxo, Dundee, BMS, PAINS, SureChEMBL, MLSMR, Inpharmatica, LINT",
     ),
     stdin_fmt: StdinFmtOpt = MDFFormat.csv,
     stdout_fmt: StdoutFmtOpt = MDFFormat.csv,
 ):
     """filter molecules using the sieve library (Lilly Medchem Rules, Pat Walters alerts, ring filters)"""
     show_help_and_exit_if_nothing(files)
+    from sieve import PW_Alert_Name
+    valid = {e.value for e in PW_Alert_Name}
+    parsed_alerts = []
+    for a in PW_alerts:
+        if a not in valid:
+            print(f"Invalid PW alert '{a}'. Valid values: {', '.join(sorted(valid))}", file=sys.stderr)
+            raise typer.Exit(code=1)
+        parsed_alerts.append(PW_Alert_Name(a))
     ring_db_path = Path(ring_db) if ring_db is not None else None
     MDF.from_stdin_and_files(files, stdin_fmt).sieve(
         lilly_medchem_rules=lilly,
         relaxed=relaxed,
         unprecedented_rings=unprecedented_rings,
         ring_db=ring_db_path,
-        PW_alerts=PW_alerts or [],
+        PW_alerts=parsed_alerts,
     ).write_file(stdout, stdout_fmt)
 
 
