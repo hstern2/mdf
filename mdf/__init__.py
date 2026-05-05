@@ -244,6 +244,7 @@ class MDF:
         size: tuple = (250, 250),
         title: str = "",
         no_smiles: bool = False,
+        columns: int = 1,
     ):
         """write an HTML table of SVG molecule images alongside dataframe columns and open it in the browser"""
         try:
@@ -274,22 +275,28 @@ class MDF:
             return re.sub(r"<\?xml[^?]*\?>", "", svg, count=1).lstrip()
 
         cols = [c for c in self.columns if not (no_smiles and c == smiles_col)]
-        header = "<th>structure</th>" + "".join(
-            f"<th>{escape(c)}</th>" for c in cols
-        )
+        single_header = "<th>structure</th>" + "".join(f"<th>{escape(c)}</th>" for c in cols)
+        header = single_header * columns
 
-        body_rows = []
+        mol_cells = []
         for row in self._df.iter_rows(named=True):
             svg = render_svg(row.get(smiles_col)) or ""
-            cells = [f'<td class="mol">{svg}</td>']
+            cells = f'<td class="mol">{svg}</td>'
             for c in cols:
                 v = row.get(c)
-                cells.append(f"<td>{escape('' if v is None else str(v))}</td>")
-            body_rows.append("<tr>" + "".join(cells) + "</tr>")
+                cells += f"<td>{escape('' if v is None else str(v))}</td>"
+            mol_cells.append(cells)
 
-        if not body_rows:
+        if not mol_cells:
             print("No rows to visualize", file=sys.stderr)
             raise typer.Exit(code=1)
+
+        empty_cells = '<td class="mol"></td>' + "<td></td>" * len(cols)
+        body_rows = []
+        for i in range(0, len(mol_cells), columns):
+            group = mol_cells[i:i + columns]
+            group += [empty_cells] * (columns - len(group))
+            body_rows.append("<tr>" + "".join(group) + "</tr>")
 
         doc = f"""<!DOCTYPE html>
 <html>
@@ -1620,6 +1627,12 @@ def viz(
         "--no-smiles",
         help="Omit the SMILES column from the table",
     ),
+    columns: int = Option(
+        1,
+        "-c",
+        "--columns",
+        help="Number of molecule columns per row (default: 1)",
+    ),
     stdin_fmt: StdinFmtOpt = MDFFormat.csv,
 ):
     """write an HTML table of SVG molecule images alongside dataframe columns and open it in the browser"""
@@ -1636,7 +1649,7 @@ def viz(
         )
         raise typer.Exit(code=1)
 
-    mdf.viz(smiles_col=smiles_col, size=size_tuple, title=title, no_smiles=no_smiles)
+    mdf.viz(smiles_col=smiles_col, size=size_tuple, title=title, no_smiles=no_smiles, columns=columns)
 
 
 if __name__ == "__main__":
