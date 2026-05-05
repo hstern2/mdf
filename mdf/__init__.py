@@ -242,7 +242,8 @@ class MDF:
         self,
         smiles_col: str = "SMILES",
         size: tuple = (250, 250),
-        title: str = "molecules",
+        title: str = "",
+        no_smiles: bool = False,
     ):
         """write an HTML table of SVG molecule images alongside dataframe columns and open it in the browser"""
         try:
@@ -272,7 +273,7 @@ class MDF:
             svg = drawer.GetDrawingText()
             return re.sub(r"<\?xml[^?]*\?>", "", svg, count=1).lstrip()
 
-        cols = list(self.columns)
+        cols = [c for c in self.columns if not (no_smiles and c == smiles_col)]
         header = "<th>structure</th>" + "".join(
             f"<th>{escape(c)}</th>" for c in cols
         )
@@ -306,7 +307,7 @@ td.mol svg {{ display: block; }}
 </style>
 </head>
 <body>
-<h1>{escape(title)}</h1>
+{f'<h1>{escape(title)}</h1>' if title else ''}
 <table>
 <thead><tr>{header}</tr></thead>
 <tbody>
@@ -1608,10 +1609,16 @@ def viz(
         help="Size of each molecule image as 'width,height' (default: '250,250')",
     ),
     title: str = Option(
-        "molecules",
+        "",
         "-t",
         "--title",
-        help="Title for the visualization (default: 'molecules')",
+        help="Title for the visualization (default: no title)",
+    ),
+    no_smiles: bool = Option(
+        False,
+        "-n",
+        "--no-smiles",
+        help="Omit the SMILES column from the table",
     ),
     stdin_fmt: StdinFmtOpt = MDFFormat.csv,
 ):
@@ -1629,7 +1636,7 @@ def viz(
         )
         raise typer.Exit(code=1)
 
-    mdf.viz(smiles_col=smiles_col, size=size_tuple, title=title)
+    mdf.viz(smiles_col=smiles_col, size=size_tuple, title=title, no_smiles=no_smiles)
 
 
 if __name__ == "__main__":
