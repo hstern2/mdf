@@ -12,7 +12,7 @@ dependencies = [
     "pyarrow",
     "typer",
     "rich",
-    "sieve @ git+https://github.com/OrogenTX/sieve.git",
+    "sieve @ git+https://github.com/hstern2/sieve.git",
     "rdkit",
     "matplotlib",
     "pymoo",
