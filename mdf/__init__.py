@@ -230,6 +230,26 @@ class MDF:
             elif fmt == MDFFormat.smi:
                 for row in self._df.iter_rows(named=True):
                     print(f"{row['SMILES']} {row['NAME']}", file=file)
+            elif fmt == MDFFormat.sdf:
+                try:
+                    from rdkit import Chem
+                    from rdkit.Chem import AllChem
+                except ImportError as e:
+                    print(f"RDKit is required for SDF output: {e}", file=sys.stderr)
+                    raise typer.Exit(code=1)
+                skip = {"SMILES", "NAME", "FILE"}
+                for row in self._df.iter_rows(named=True):
+                    smiles = row.get("SMILES", "")
+                    mol = Chem.MolFromSmiles(smiles) if smiles else None
+                    if mol is None:
+                        continue
+                    AllChem.Compute2DCoords(mol)
+                    mol.SetProp("_Name", str(row.get("NAME", "")))
+                    file.write(Chem.MolToMolBlock(mol))
+                    for col, val in row.items():
+                        if col not in skip and val is not None:
+                            file.write(f">  <{col}>\n{val}\n\n")
+                    file.write("$$$$\n")
             else:
                 raise ValueError(f"Unknown fmt: {fmt}")
         except BrokenPipeError:
