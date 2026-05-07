@@ -16,198 +16,72 @@ Input and output formats are inferred from file extensions (`.csv`, `.smi`, `.sd
 When reading from stdin, use `-i/--stdin-fmt` to specify the format (default: `csv`).
 When writing to stdout, use `-o/--stdout-fmt` (default: `csv`).
 
-Most commands accept one or more input files, or read from stdin if no files are given:
-
-```bash
-mdf props molecules.csv > with_props.csv
-cat molecules.smi | mdf props -i smi > with_props.csv
-```
-
----
+Most commands accept one or more input files, or read from stdin if no files are given.
 
 ### Subcommands
 
-#### Molecular Properties & Transformations
+#### Molecular Properties and Transformations
 
-**`props`** — Add computed molecular property columns: `HAC`, `MW`, `CLOGP`, `HBD`, `HBA`, `TPSA`, `SA_SCORE`, `QED`, `N_ROT_BONDS`, `PASSES_RO5`.
+**`props`**: Calculate molecular properties from SMILES and add them as new columns: `HAC`, `MW`, `CLOGP`, `HBD`, `HBA`, `TPSA`, `SA_SCORE`, `QED`, `N_ROT_BONDS`, `PASSES_RO5`.
 
-```bash
-mdf props molecules.csv > with_props.csv
-mdf props -s MOL_SMILES molecules.csv   # use a non-default SMILES column
-```
+**`canon`**: Canonicalize SMILES in the specified column using RDKit.
 
-**`canon`** — Canonicalize SMILES strings in-place using RDKit.
-
-```bash
-mdf canon molecules.csv > canonical.csv
-```
-
-**`pX`** — Convert IC50-like values (in a column whose name encodes the unit: `M`, `mM`, `uM`/`µM`, `nM`, `pM`) to pX (e.g. pIC50).
-
-```bash
-mdf pX IC50_nM data.csv -n pIC50 > with_pIC50.csv
-```
-
----
+**`pX`**: Calculate a new pX column as -log10(unit * x), with the unit (`M`, `mM`, `uM`, `nM`, `pM`) inferred from the matched column name.
 
 #### Similarity
 
-**`sims`** — Add a `tanimoto_similarity_to_<NAME>` column for each molecule in a target file.
+**`sims`**: Add Tanimoto similarity columns to the input dataframe for each molecule in a target dataframe.
 
-```bash
-mdf sims input.csv --to targets.csv > with_sims.csv
-mdf sims input.csv --to targets.smi -S > sorted_by_sim.csv   # -S sorts by first sim column
-```
-
-**`diverse`** — Greedily sample rows, skipping molecules with Tanimoto similarity ≥ threshold to any already-selected molecule.
-
-```bash
-mdf diverse molecules.csv -t 0.6 > diverse_subset.csv
-```
-
----
+**`diverse`**: Sample rows in order, excluding molecules similar to already selected ones based on Tanimoto similarity of RDKit fingerprints.
 
 #### Medicinal Chemistry Filters
 
-**`sieve`** — Filter molecules using medicinal chemistry rules. Supports [Lilly MedChem Rules](https://github.com/IanAWatson/Lilly-Medchem-Rules) and [Pat Walters' rd_filters](https://github.com/PatWalters/rd_filters) alert sets.
-
-```bash
-mdf sieve -l molecules.csv               # Lilly rules (strict)
-mdf sieve -r molecules.csv               # Lilly rules (relaxed)
-mdf sieve -P PAINS -P Glaxo molecules.csv  # Pat Walters alert sets
-```
+**`sieve`**: Filter molecules using the sieve library (Lilly MedChem Rules, Pat Walters alerts, ring filters). Use `-l` for Lilly rules, `-r` for relaxed Lilly rules, `-R` for the unprecedented ring filter, and `-P` for Pat Walters alert sets.
 
 Available `-P` alert sets: `Glaxo`, `Dundee`, `BMS`, `PAINS`, `SureChEMBL`, `MLSMR`, `Inpharmatica`, `LINT`, `all`.
 
----
+#### Filtering and Selection
 
-#### Filtering & Selection
+**`grep`**: Print rows where any column matching the column regex has a value matching the value regex.
 
-**`grep`** — Keep rows where a column (matched by regex) contains a value (matched by regex). Use `-v` to invert.
+**`minmax`**: Filter rows by numeric range on the first column matching the regex pattern.
 
-```bash
-mdf grep series "scaffold_A" data.csv
-mdf grep status "active" data.csv -v   # exclude rows where status matches "active"
-```
+**`cols`**: Print only columns matching the regex pattern.
 
-**`minmax`** — Filter rows by numeric range on a column (matched by regex).
+**`uniq`**: Drop duplicates based on canonical SMILES from the specified column.
 
-```bash
-mdf minmax MW -m 200 -M 500 data.csv
-```
+**`recent`**: Keep only the most recent row for each NAME, based on the date column matching the regex pattern.
 
-**`cols`** — Select columns whose names match a regex.
+#### Sorting and Sampling
 
-```bash
-mdf cols "^(NAME|SMILES|pIC50)" data.csv
-```
+**`sort`**: Sort by the first column matching the regex pattern.
 
-**`uniq`** — Drop duplicate rows by canonical SMILES.
+**`shuffle`**: Shuffle the rows randomly.
 
-```bash
-mdf uniq molecules.csv > deduped.csv
-```
-
-**`recent`** — When rows share a `NAME`, keep only the most recent one (by a date column).
-
-```bash
-mdf recent -d "Assay Date" data.csv > latest.csv
-```
-
----
-
-#### Sorting & Sampling
-
-**`sort`** — Sort by a column (matched by regex). Use `-r` for descending.
-
-```bash
-mdf sort pIC50 -r data.csv > sorted.csv
-```
-
-**`shuffle`** — Randomly shuffle rows.
-
-```bash
-mdf shuffle data.csv > shuffled.csv
-```
-
-**`take`** — Sample N random rows.
-
-```bash
-mdf take 100 data.csv > sample.csv
-```
-
----
+**`take`**: Sample n random rows from the input.
 
 #### Multi-objective Analysis
 
-**`pareto`** — Assign each row a Pareto front index (`front` column, 0 = non-dominated) based on one or more objective columns to minimize.
+**`pareto`**: Perform Pareto sorting on objective functions (columns to minimize). Returns all fronts with a `front` column (0=best, non-dominated front), or only the first front if `--only-first-front` is specified.
 
-```bash
-mdf pareto -O MW -O "SA Score" data.csv > with_fronts.csv
-mdf pareto -O MW -O "SA Score" -f data.csv > first_front_only.csv
-```
+#### I/O and Reshaping
 
----
+**`cat`**: Concatenate and print mdf files.
 
-#### I/O & Reshaping
+**`merge`**: Merge multiple mdf files on a column, removing duplicate columns except for the key.
 
-**`cat`** — Concatenate multiple files.
+**`split`**: Split the input into n shards (round-robin) and write each to a file using the template (with `%` replaced by the shard index).
 
-```bash
-mdf cat a.csv b.csv c.csv > combined.csv
-mdf cat -H vertical a.csv b.csv   # vertical (stack rows), horizontal (align columns), or diagonal (default)
-```
+**`ttsplit`**: Perform a random test-train split and write to separate files with the given prefix.
 
-**`merge`** — Join multiple files on a key column (default: `NAME`).
+**`smi`**: Concatenate and print mdf files in SMILES format (equivalent to `cat -o smi`).
 
-```bash
-mdf merge -k NAME -H inner a.csv b.csv > merged.csv
-```
+**`colnames`**: Print column names, one per line.
 
-**`split`** — Split into N shards by round-robin row assignment.
-
-```bash
-mdf split 5 data.csv -t "shard_%.csv"   # writes shard_0.csv … shard_4.csv
-```
-
-**`ttsplit`** — Randomly shuffle and split into train/test CSV files.
-
-```bash
-mdf ttsplit data.csv -f 0.8 -p dataset   # writes dataset_train.csv and dataset_test.csv
-```
-
-**`smi`** — Output data as SMILES format (`SMILES NAME`).
-
-```bash
-mdf smi molecules.csv > output.smi
-```
-
-**`colnames`** — Print column names, one per line.
-
-```bash
-mdf colnames data.csv
-```
-
-**`rename`** — Rename the first column matching a regex.
-
-```bash
-mdf rename "Molecule Name" NAME data.csv
-```
-
----
+**`rename`**: Rename the first column matching the regex to the new name.
 
 #### Visualization
 
-**`viz`** — Open an HTML page with a table of rendered molecule structures and all data columns.
+**`viz`**: Write an HTML table of SVG molecule images alongside dataframe columns and open it in the browser.
 
-```bash
-mdf viz molecules.csv
-mdf viz molecules.csv --size 300,300 -t "My Compounds"
-```
-
-**`plot`** — Open an HTML scatter plot of one or more Y columns vs. an X column, with Pearson R displayed.
-
-```bash
-mdf plot data.csv -x MW -y pIC50
-mdf plot data.csv -x MW -y pIC50 -y CLOGP -t "Property Correlations"
-```
+**`plot`**: Scatter plot of columns matching `-x` (x axis) vs `-y` (y axis, repeatable); shows Pearson R in legend.
