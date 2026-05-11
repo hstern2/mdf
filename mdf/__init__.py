@@ -347,7 +347,14 @@ td.mol svg {{ display: block; }}
 
         _open_html(doc)
 
-    def plot(self, x_col: str, y_cols: List[str], title: str = ""):
+    def plot(
+        self,
+        x_col: str,
+        y_cols: List[str],
+        title: str = "",
+        x_err_col: Optional[str] = None,
+        y_err_cols: Optional[List[str]] = None,
+    ):
         """generate a scatter plot and open it in the browser"""
         from html import escape
 
@@ -356,22 +363,53 @@ td.mol svg {{ display: block; }}
             "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
         ]
 
+        y_err_cols = y_err_cols or []
+        if y_err_cols and len(y_err_cols) not in (1, len(y_cols)):
+            print(
+                "Number of y-error columns must be 1 or match the number of y columns",
+                file=sys.stderr,
+            )
+            raise typer.Exit(code=1)
+        y_err_for_y = (
+            [y_err_cols[0]] * len(y_cols)
+            if len(y_err_cols) == 1
+            else y_err_cols or [None] * len(y_cols)
+        )
+
         series = []
-        for y_col in y_cols:
-            sub = self._df.select([x_col, y_col]).cast(ps.Float64, strict=False).drop_nulls()
+        for y_col, y_err_col in zip(y_cols, y_err_for_y):
+            cols = [x_col, y_col]
+            if x_err_col:
+                cols.append(x_err_col)
+            if y_err_col:
+                cols.append(y_err_col)
+            sub = self._df.select(list(dict.fromkeys(cols))).cast(ps.Float64, strict=False).drop_nulls()
             if sub.is_empty():
                 print(f"No numeric data for column '{y_col}'", file=sys.stderr)
                 continue
             xs_s, ys_s = sub[x_col], sub[y_col]
             r = sub.select(ps.corr(x_col, y_col)).item()
-            series.append((y_col, xs_s.to_list(), ys_s.to_list(), r))
+            x_errs = [abs(v) for v in sub[x_err_col].to_list()] if x_err_col else None
+            y_errs = [abs(v) for v in sub[y_err_col].to_list()] if y_err_col else None
+            series.append((y_col, xs_s.to_list(), ys_s.to_list(), x_errs, y_errs, r))
 
         if not series:
             print("No data to plot", file=sys.stderr)
             raise typer.Exit(code=1)
 
-        all_x = [x for _, xs, _, _ in series for x in xs]
-        all_y = [y for _, _, ys, _ in series for y in ys]
+        all_x = []
+        all_y = []
+        for _, xs, ys, x_errs, y_errs, _ in series:
+            if x_errs is None:
+                all_x.extend(xs)
+            else:
+                for x, err in zip(xs, x_errs):
+                    all_x.extend([x - err, x + err])
+            if y_errs is None:
+                all_y.extend(ys)
+            else:
+                for y, err in zip(ys, y_errs):
+                    all_y.extend([y - err, y + err])
         x_min, x_max, x_ticks = _nice_ticks(min(all_x), max(all_x))
         y_min, y_max, y_ticks = _nice_ticks(min(all_y), max(all_y))
 
@@ -405,7 +443,7 @@ td.mol svg {{ display: block; }}
         els.append(f'<text x="{cx:.1f}" y="{H-8}" text-anchor="middle" font-size="13" fill="#333">{escape(x_col)}</text>')
         cy = mt + ph / 2
         if len(series) == 1:
-            y_col_name, _, _, r = series[0]
+            y_col_name, _, _, _, _, r = series[0]
             r_str = f" (r={r:.3f})" if not math.isnan(r) else ""
             y_label = escape(y_col_name) + r_str
         else:
@@ -415,15 +453,29 @@ td.mol svg {{ display: block; }}
         if title:
             els.append(f'<text x="{W/2:.1f}" y="24" text-anchor="middle" font-size="15" font-weight="bold" fill="#222">{escape(title)}</text>')
 
-        for i, (y_col, xs_data, ys_data, _) in enumerate(series):
+        cap = 4
+        for i, (y_col, xs_data, ys_data, x_errs, y_errs, _) in enumerate(series):
             color = COLORS[i % len(COLORS)]
-            for x, y in zip(xs_data, ys_data):
+            for j, (x, y) in enumerate(zip(xs_data, ys_data)):
                 px, py = to_svg(x, y)
+                if x_errs is not None and x_errs[j] > 0:
+                    x1, _ = to_svg(x - x_errs[j], y)
+                    x2, _ = to_svg(x + x_errs[j], y)
+                    els.append(f'<line x1="{x1:.1f}" y1="{py:.1f}" x2="{x2:.1f}" y2="{py:.1f}" stroke="{color}" stroke-opacity="0.55" stroke-width="1.2"/>')
+                    els.append(f'<line x1="{x1:.1f}" y1="{py-cap:.1f}" x2="{x1:.1f}" y2="{py+cap:.1f}" stroke="{color}" stroke-opacity="0.55" stroke-width="1.2"/>')
+                    els.append(f'<line x1="{x2:.1f}" y1="{py-cap:.1f}" x2="{x2:.1f}" y2="{py+cap:.1f}" stroke="{color}" stroke-opacity="0.55" stroke-width="1.2"/>')
+                if y_errs is not None and y_errs[j] > 0:
+                    _, y1 = to_svg(x, y - y_errs[j])
+                    _, y2 = to_svg(x, y + y_errs[j])
+                    y_top, y_bottom = sorted((y1, y2))
+                    els.append(f'<line x1="{px:.1f}" y1="{y_top:.1f}" x2="{px:.1f}" y2="{y_bottom:.1f}" stroke="{color}" stroke-opacity="0.55" stroke-width="1.2"/>')
+                    els.append(f'<line x1="{px-cap:.1f}" y1="{y_top:.1f}" x2="{px+cap:.1f}" y2="{y_top:.1f}" stroke="{color}" stroke-opacity="0.55" stroke-width="1.2"/>')
+                    els.append(f'<line x1="{px-cap:.1f}" y1="{y_bottom:.1f}" x2="{px+cap:.1f}" y2="{y_bottom:.1f}" stroke="{color}" stroke-opacity="0.55" stroke-width="1.2"/>')
                 els.append(f'<circle cx="{px:.1f}" cy="{py:.1f}" r="4" fill="{color}" fill-opacity="0.65" stroke="{color}" stroke-width="0.5"/>')
 
         if len(series) > 1:
             lx, ly = ml + pw + 15, mt + 10
-            for i, (y_col, _, _, r) in enumerate(series):
+            for i, (y_col, _, _, _, _, r) in enumerate(series):
                 color = COLORS[i % len(COLORS)]
                 r_str = f"r={r:.3f}" if not math.isnan(r) else "r=N/A"
                 els.append(f'<rect x="{lx}" y="{ly + i*22}" width="12" height="12" fill="{color}" fill-opacity="0.8"/>')
@@ -1329,10 +1381,12 @@ def plot(
     files: FilesType = FilesArg,
     x_col: Annotated[str, Option("-x", "--x-col", help="Regex for x-axis column")] = ...,
     y_cols: Annotated[Optional[List[str]], Option("-y", "--y-col", help="Regex for y-axis columns (repeatable)")] = None,
+    x_err_col: Annotated[Optional[str], Option("--xerr", help="Regex for x-error column")] = None,
+    y_err_cols: Annotated[Optional[List[str]], Option("--yerr", help="Regex for y-error columns (repeatable; one shared column or one per y column)")] = None,
     title: Annotated[str, Option("-t", "--title", help="Plot title (omit for no title)")] = "",
     stdin_fmt: StdinFmtOpt = MDFFormat.csv,
 ):
-    """scatter plot of columns matching -x (x axis) vs -y (y axis, repeatable); shows Pearson R in legend"""
+    """scatter plot of columns matching -x vs -y, with optional x/y error bars; shows Pearson R in legend"""
     show_help_and_exit_if_nothing(files)
     mdf = MDF.from_stdin_and_files(files, stdin_fmt)
     x_matches = mdf.matching_cols(x_col)
@@ -1346,7 +1400,22 @@ def plot(
     ys = []
     for pat in y_patterns:
         ys.extend(mdf.matching_cols(pat))
-    mdf.plot(x_col=x, y_cols=ys, title=title)
+    xerr = None
+    if x_err_col:
+        xerr_matches = mdf.matching_cols(x_err_col)
+        if len(xerr_matches) > 1:
+            print(f"Warning: multiple columns match '{x_err_col}', using '{xerr_matches[0]}'", file=sys.stderr)
+        xerr = xerr_matches[0]
+    yerrs = []
+    for pat in y_err_cols or []:
+        yerrs.extend(mdf.matching_cols(pat))
+    if yerrs and len(yerrs) not in (1, len(ys)):
+        print(
+            "Number of --yerr columns must be 1 or match the number of resolved -y columns",
+            file=sys.stderr,
+        )
+        raise typer.Exit(code=1)
+    mdf.plot(x_col=x, y_cols=ys, title=title, x_err_col=xerr, y_err_cols=yerrs)
 
 
 @app.command()
