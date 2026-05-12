@@ -1,9 +1,4 @@
-import sys
-
-from .cli import app
+from .cli import run
 
 
-if len(sys.argv) == 1:
-    app(["--help"])
-else:
-    app()
+run()

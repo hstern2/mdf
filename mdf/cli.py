@@ -41,7 +41,16 @@ app = Typer(
     add_completion=False,
     context_settings={"help_option_names": ["-h", "--help"]},
     help=f"Molecular data frame utilities for handling molecular data in various formats\n\nVersion: {__version__}",
+    no_args_is_help=True,
 )
+
+
+def run():
+    """Console script entrypoint."""
+    if len(sys.argv) == 1:
+        app(["--help"])
+    else:
+        app()
 
 
 @app.callback()
@@ -603,4 +612,3 @@ def viz(
         raise typer.Exit(code=1)
 
     mdf.viz(smiles_col=smiles_col, size=size_tuple, title=title, no_smiles=no_smiles, columns=columns)
-
