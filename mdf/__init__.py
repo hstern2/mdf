@@ -123,6 +123,84 @@ def _open_html(doc: str):
     webbrowser.open(f"file://{path}")
 
 
+def _write_plot_png(
+    output: Path,
+    x_col: str,
+    title: str,
+    series,
+    x_min: float,
+    x_max: float,
+    y_min: float,
+    y_max: float,
+    x_ticks,
+    y_ticks,
+    colors,
+    width_px: int,
+    height_px: int,
+):
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    def r_text(r):
+        return f"r={r:.3f}" if isinstance(r, (int, float)) and math.isfinite(r) else "r=N/A"
+
+    output = output.expanduser()
+    if output.suffix.lower() != ".png":
+        print("Output filename must end in .png", file=sys.stderr)
+        raise typer.Exit(code=1)
+
+    dpi = 300
+    fig, ax = plt.subplots(figsize=(width_px / 100, height_px / 100), dpi=dpi)
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("#fafafa")
+    ax.set_xlim(x_min, x_max)
+    ax.set_ylim(y_min, y_max)
+    ax.set_xticks(x_ticks)
+    ax.set_yticks(y_ticks)
+    ax.grid(True, color="#eeeeee", linewidth=0.8)
+    ax.set_axisbelow(True)
+    ax.set_xlabel(x_col)
+
+    for i, (y_col, xs_data, ys_data, x_errs, y_errs, r) in enumerate(series):
+        color = colors[i % len(colors)]
+        label = f"{y_col} ({r_text(r)})"
+        ax.errorbar(
+            xs_data,
+            ys_data,
+            xerr=x_errs,
+            yerr=y_errs,
+            fmt="o",
+            markersize=4,
+            color=color,
+            ecolor=color,
+            elinewidth=1.2,
+            capsize=4,
+            alpha=0.75,
+            markeredgewidth=0.5,
+            label=label,
+        )
+
+    if len(series) == 1:
+        y_col, _, _, _, _, r = series[0]
+        ax.set_ylabel(f"{y_col} ({r_text(r)})")
+    else:
+        ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1), borderaxespad=0, frameon=False)
+
+    if title:
+        ax.set_title(title, fontsize=11, fontweight="bold")
+
+    try:
+        fig.savefig(output, format="png", dpi=dpi, bbox_inches="tight")
+        print(f"Wrote plot to '{output}'", file=sys.stderr)
+    except OSError as e:
+        print(f"Could not write plot to '{output}': {e}", file=sys.stderr)
+        raise typer.Exit(code=1) from e
+    finally:
+        plt.close(fig)
+
+
 def _version_callback(value: bool):
     if value:
         rich.print(f"[bold blue]MDF - Molecular Data Frame[/bold blue]")
@@ -354,8 +432,9 @@ td.mol svg {{ display: block; }}
         title: str = "",
         x_err_col: Optional[str] = None,
         y_err_cols: Optional[List[str]] = None,
+        output: Optional[Path] = None,
     ):
-        """generate a scatter plot and open it in the browser"""
+        """generate a scatter plot and open it in the browser or write it to PNG"""
         from html import escape
 
         COLORS = [
@@ -416,6 +495,24 @@ td.mol svg {{ display: block; }}
         W, H = 740, 500
         ml, mr, mt, mb = 70, 210 if len(series) > 1 else 30, 40, 55
         pw, ph = W - ml - mr, H - mt - mb
+
+        if output:
+            _write_plot_png(
+                output,
+                x_col,
+                title,
+                series,
+                x_min,
+                x_max,
+                y_min,
+                y_max,
+                x_ticks,
+                y_ticks,
+                COLORS,
+                W,
+                H,
+            )
+            return
 
         def to_svg(x, y):
             px = ml + (x - x_min) / (x_max - x_min) * pw
@@ -1384,6 +1481,7 @@ def plot(
     x_err_col: Annotated[Optional[str], Option("--xerr", help="Regex for x-error column")] = None,
     y_err_cols: Annotated[Optional[List[str]], Option("--yerr", help="Regex for y-error columns (repeatable; one shared column or one per y column)")] = None,
     title: Annotated[str, Option("-t", "--title", help="Plot title (omit for no title)")] = "",
+    output: Annotated[Optional[Path], Option("-o", "--output", help="Write a high-quality PNG plot to this file instead of opening the browser")] = None,
     stdin_fmt: StdinFmtOpt = MDFFormat.csv,
 ):
     """scatter plot of columns matching -x vs -y, with optional x/y error bars; shows Pearson R in legend"""
@@ -1415,7 +1513,7 @@ def plot(
             file=sys.stderr,
         )
         raise typer.Exit(code=1)
-    mdf.plot(x_col=x, y_cols=ys, title=title, x_err_col=xerr, y_err_cols=yerrs)
+    mdf.plot(x_col=x, y_cols=ys, title=title, x_err_col=xerr, y_err_cols=yerrs, output=output)
 
 
 @app.command()
