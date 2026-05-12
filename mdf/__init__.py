@@ -700,7 +700,7 @@ td.mol svg {{ display: block; }}
 
     @classmethod
     def from_sdf(cls, f):
-        """create mdf from SDF file; produces _Name, SMILES, FILE columns plus any SDF tags"""
+        """create mdf from SDF file; produces NAME, SMILES, FILE columns plus any SDF tags"""
         try:
             from rdkit.Chem import SDMolSupplier, ForwardSDMolSupplier, MolToSmiles
         except ImportError as e:
@@ -722,7 +722,7 @@ td.mol svg {{ display: block; }}
             if m is None:
                 continue
             d = {
-                "_Name": m.GetProp("_Name") if m.HasProp("_Name") else "",
+                "NAME": m.GetProp("_Name") if m.HasProp("_Name") else "",
                 "SMILES": MolToSmiles(m),
                 "FILE": filename,
             }
