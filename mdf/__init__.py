@@ -71,6 +71,27 @@ FLOAT_PROPS = {
     "QED",
 }  # Properties that should be formatted
 
+TITLE_COLUMN_PRIORITY = (
+    "NAME",
+    "Name",
+    "name",
+    "Molecule Name",
+    "MoleculeName",
+    "Molecule_Name",
+    "Compound Name",
+    "CompoundName",
+    "compound_name",
+    "Compound ID",
+    "CompoundID",
+    "compound_id",
+    "ID",
+    "Id",
+    "id",
+    "Title",
+    "title",
+    "_Name",
+)
+
 
 def format_number(value, digits: int):
     """Format a number to the specified number of significant digits"""
@@ -292,6 +313,32 @@ class MDF:
             return MDF(result)
         return result
 
+    def _infer_title_column(self) -> Optional[str]:
+        """Return the best column to use as a molecule title, if one exists."""
+        columns = list(self.columns)
+        column_set = set(columns)
+        for col in TITLE_COLUMN_PRIORITY:
+            if col in column_set:
+                return col
+        for col in columns:
+            if col in {"SMILES", "FILE"}:
+                continue
+            if re.search(r"name|title|id", col, re.IGNORECASE):
+                return col
+        return None
+
+    @staticmethod
+    def _title_value(value) -> str:
+        """Render a title-like field value without treating nulls as names."""
+        if value is None:
+            return ""
+        try:
+            if math.isnan(value):
+                return ""
+        except TypeError:
+            pass
+        return str(value).strip()
+
     def write_file(self, file, fmt: MDFFormat = MDFFormat.csv):
         """write mdf to file in specified fmt; opens file if given a path or string"""
         if fmt == MDFFormat.viz:
@@ -306,8 +353,15 @@ class MDF:
             if fmt == MDFFormat.csv:
                 self._df.write_csv(file)
             elif fmt == MDFFormat.smi:
+                if "SMILES" not in self.columns:
+                    print("Column 'SMILES' not found in dataframe", file=sys.stderr)
+                    raise typer.Exit(code=1)
+                title_col = self._infer_title_column()
                 for row in self._df.iter_rows(named=True):
-                    print(f"{row['SMILES']} {row['NAME']}", file=file)
+                    smiles = row.get("SMILES")
+                    smiles = "" if smiles is None else str(smiles)
+                    title = self._title_value(row.get(title_col)) if title_col else ""
+                    print(f"{smiles} {title}" if title else smiles, file=file)
             elif fmt == MDFFormat.sdf:
                 try:
                     from rdkit import Chem
@@ -315,14 +369,19 @@ class MDF:
                 except ImportError as e:
                     print(f"RDKit is required for SDF output: {e}", file=sys.stderr)
                     raise typer.Exit(code=1)
-                skip = {"SMILES", "NAME", "FILE"}
+                if "SMILES" not in self.columns:
+                    print("Column 'SMILES' not found in dataframe", file=sys.stderr)
+                    raise typer.Exit(code=1)
+                title_col = self._infer_title_column()
+                skip = {"SMILES", "FILE"}
                 for row in self._df.iter_rows(named=True):
                     smiles = row.get("SMILES", "")
                     mol = Chem.MolFromSmiles(smiles) if smiles else None
                     if mol is None:
                         continue
                     AllChem.Compute2DCoords(mol)
-                    mol.SetProp("_Name", str(row.get("NAME", "")))
+                    title = self._title_value(row.get(title_col)) if title_col else ""
+                    mol.SetProp("_Name", title)
                     file.write(Chem.MolToMolBlock(mol))
                     for col, val in row.items():
                         if col not in skip and val is not None:
@@ -614,7 +673,7 @@ td.mol svg {{ display: block; }}
     @classmethod
     def from_csv(cls, f):
         """create mdf from csv file"""
-        return cls(ps.read_csv(f, infer_schema_length=None).rename({'Molecule Name': 'NAME'}, strict=False))
+        return cls(ps.read_csv(f, infer_schema_length=None))
 
     @classmethod
     def from_smi(cls, fn):
@@ -641,7 +700,7 @@ td.mol svg {{ display: block; }}
 
     @classmethod
     def from_sdf(cls, f):
-        """create mdf from SDF file; produces NAME, SMILES, FILE columns plus any SDF tags"""
+        """create mdf from SDF file; produces _Name, SMILES, FILE columns plus any SDF tags"""
         try:
             from rdkit.Chem import SDMolSupplier, ForwardSDMolSupplier, MolToSmiles
         except ImportError as e:
@@ -663,7 +722,7 @@ td.mol svg {{ display: block; }}
             if m is None:
                 continue
             d = {
-                "NAME": m.GetProp("_Name") if m.HasProp("_Name") else "",
+                "_Name": m.GetProp("_Name") if m.HasProp("_Name") else "",
                 "SMILES": MolToSmiles(m),
                 "FILE": filename,
             }
