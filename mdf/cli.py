@@ -514,6 +514,17 @@ def sort(
 
 
 @app.command()
+def stats(
+    files: FilesType = FilesArg,
+    stdin_fmt: StdinFmtOpt = MDFFormat.csv,
+    stdout_fmt: StdoutFmtOpt = MDFFormat.csv,
+):
+    """print count, mean, stddev, min, and max for each numeric column"""
+    show_help_and_exit_if_nothing(files)
+    MDF.from_stdin_and_files(files, stdin_fmt).stats().write_file(sys.stdout, stdout_fmt)
+
+
+@app.command()
 def split(
     n: int = Argument(..., help="Number of shards to split into"),
     files: FilesType = FilesArg,

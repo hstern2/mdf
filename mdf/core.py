@@ -780,6 +780,39 @@ td.mol svg {{ display: block; }}
             combined_df = ps.concat(front_dfs)
             return MDF(combined_df)
 
+    def stats(self) -> "MDF":
+        """return summary statistics for each numeric column, excluding nulls and NaNs"""
+        rows = []
+        for col, dtype in zip(self.columns, self._df.dtypes):
+            if not dtype.is_numeric():
+                continue
+            values = self._df.select(
+                ps.col(col).cast(ps.Float64, strict=False).drop_nans().drop_nulls()
+            ).to_series()
+            rows.append(
+                {
+                    "column": col,
+                    "count": len(values),
+                    "mean": values.mean(),
+                    "stddev": values.std(),
+                    "min": values.min(),
+                    "max": values.max(),
+                }
+            )
+        return MDF(
+            ps.DataFrame(
+                rows,
+                schema={
+                    "column": ps.Utf8,
+                    "count": ps.Int64,
+                    "mean": ps.Float64,
+                    "stddev": ps.Float64,
+                    "min": ps.Float64,
+                    "max": ps.Float64,
+                },
+            )
+        )
+
     def props(self, smiles_col: str = "SMILES", digits: int = 3) -> "MDF":
         """return a new mdf with molecular properties calculated from SMILES in the specified column"""
         try:

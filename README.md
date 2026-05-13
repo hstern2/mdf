@@ -56,6 +56,8 @@ Available `-P` alert sets: `Glaxo`, `Dundee`, `BMS`, `PAINS`, `SureChEMBL`, `MLS
 
 **`sort`**: Sort by the first column matching the regex pattern.
 
+**`stats`**: Print count, mean, stddev, min, and max for each numeric column, excluding nulls and NaNs.
+
 **`shuffle`**: Shuffle the rows randomly.
 
 **`take`**: Sample n random rows from the input.
