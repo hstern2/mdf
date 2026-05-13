@@ -255,11 +255,14 @@ def plot(
     y_cols: Annotated[Optional[List[str]], Option("-y", "--y-col", help="Regex for y-axis columns (repeatable)")] = None,
     x_err_col: Annotated[Optional[str], Option("--xerr", help="Regex for x-error column")] = None,
     y_err_cols: Annotated[Optional[List[str]], Option("--yerr", help="Regex for y-error columns (repeatable; one shared column or one per y column)")] = None,
+    label_col: Annotated[Optional[str], Option("--label-col", "--labels", help="Regex for column to use as point labels")] = None,
+    x_label: Annotated[Optional[str], Option("--x-label", "--xlabel", help="Override x-axis label")] = None,
+    y_label: Annotated[Optional[str], Option("--y-label", "--ylabel", help="Override y-axis label, useful with multiple -y columns")] = None,
     title: Annotated[str, Option("-t", "--title", help="Plot title (omit for no title)")] = "",
     output: Annotated[Optional[Path], Option("-o", "--output", help="Write a high-quality PNG plot to this file instead of opening the browser")] = None,
     stdin_fmt: StdinFmtOpt = MDFFormat.csv,
 ):
-    """scatter plot of columns matching -x vs -y, with optional x/y error bars; shows Pearson R in legend"""
+    """scatter plot of columns matching -x vs -y, with optional error bars, point labels, and axis labels"""
     show_help_and_exit_if_nothing(files)
     mdf = MDF.from_stdin_and_files(files, stdin_fmt)
     x_matches = mdf.matching_cols(x_col)
@@ -288,7 +291,23 @@ def plot(
             file=sys.stderr,
         )
         raise typer.Exit(code=1)
-    mdf.plot(x_col=x, y_cols=ys, title=title, x_err_col=xerr, y_err_cols=yerrs, output=output)
+    labels = None
+    if label_col:
+        label_matches = mdf.matching_cols(label_col)
+        if len(label_matches) > 1:
+            print(f"Warning: multiple columns match '{label_col}', using '{label_matches[0]}'", file=sys.stderr)
+        labels = label_matches[0]
+    mdf.plot(
+        x_col=x,
+        y_cols=ys,
+        title=title,
+        x_err_col=xerr,
+        y_err_cols=yerrs,
+        output=output,
+        label_col=labels,
+        x_label=x_label,
+        y_label=y_label,
+    )
 
 
 @app.command()

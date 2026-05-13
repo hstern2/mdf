@@ -11,7 +11,7 @@ from polars.exceptions import SchemaError
 
 from .constants import FLOAT_PROPS, PROP_NAMES, TITLE_COLUMN_PRIORITY
 from .formats import CatHow, MDFFormat, MergeHow
-from .plotting import _fmt_tick, _nice_ticks, _open_html, _write_plot_png
+from .plotting import _fmt_tick, _nice_ticks, _open_html, _plot_label_text, _write_plot_png
 
 
 def format_number(value, digits: int):
@@ -268,6 +268,9 @@ td.mol svg {{ display: block; }}
         x_err_col: Optional[str] = None,
         y_err_cols: Optional[List[str]] = None,
         output: Optional[Path] = None,
+        label_col: Optional[str] = None,
+        x_label: Optional[str] = None,
+        y_label: Optional[str] = None,
     ):
         """generate a scatter plot and open it in the browser or write it to PNG"""
         from html import escape
@@ -292,12 +295,17 @@ td.mol svg {{ display: block; }}
 
         series = []
         for y_col, y_err_col in zip(y_cols, y_err_for_y):
-            cols = [x_col, y_col]
+            numeric_cols = [x_col, y_col]
             if x_err_col:
-                cols.append(x_err_col)
+                numeric_cols.append(x_err_col)
             if y_err_col:
-                cols.append(y_err_col)
-            sub = self._df.select(list(dict.fromkeys(cols))).cast(ps.Float64, strict=False).drop_nulls()
+                numeric_cols.append(y_err_col)
+            numeric_cols = list(dict.fromkeys(numeric_cols))
+            cols = numeric_cols + ([label_col] if label_col else [])
+            sub = self._df.select(list(dict.fromkeys(cols)))
+            sub = sub.with_columns(
+                [ps.col(col).cast(ps.Float64, strict=False) for col in numeric_cols]
+            ).drop_nulls(numeric_cols)
             if sub.is_empty():
                 print(f"No numeric data for column '{y_col}'", file=sys.stderr)
                 continue
@@ -305,7 +313,8 @@ td.mol svg {{ display: block; }}
             r = sub.select(ps.corr(x_col, y_col)).item()
             x_errs = [abs(v) for v in sub[x_err_col].to_list()] if x_err_col else None
             y_errs = [abs(v) for v in sub[y_err_col].to_list()] if y_err_col else None
-            series.append((y_col, xs_s.to_list(), ys_s.to_list(), x_errs, y_errs, r))
+            point_labels = sub[label_col].to_list() if label_col else None
+            series.append((y_col, xs_s.to_list(), ys_s.to_list(), x_errs, y_errs, point_labels, r))
 
         if not series:
             print("No data to plot", file=sys.stderr)
@@ -313,7 +322,7 @@ td.mol svg {{ display: block; }}
 
         all_x = []
         all_y = []
-        for _, xs, ys, x_errs, y_errs, _ in series:
+        for _, xs, ys, x_errs, y_errs, _, _ in series:
             if x_errs is None:
                 all_x.extend(xs)
             else:
@@ -346,6 +355,8 @@ td.mol svg {{ display: block; }}
                 COLORS,
                 W,
                 H,
+                x_label=x_label,
+                y_label=y_label,
             )
             return
 
@@ -372,21 +383,25 @@ td.mol svg {{ display: block; }}
         els.append(f'<line x1="{ml}" y1="{mt}" x2="{ml}" y2="{mt+ph}" stroke="#555" stroke-width="1.5"/>')
 
         cx = ml + pw / 2
-        els.append(f'<text x="{cx:.1f}" y="{H-8}" text-anchor="middle" font-size="13" fill="#333">{escape(x_col)}</text>')
+        axis_x_label = x_label if x_label is not None else x_col
+        if axis_x_label:
+            els.append(f'<text x="{cx:.1f}" y="{H-8}" text-anchor="middle" font-size="13" fill="#333">{escape(axis_x_label)}</text>')
         cy = mt + ph / 2
-        if len(series) == 1:
-            y_col_name, _, _, _, _, r = series[0]
+        if y_label is not None:
+            axis_y_label = escape(y_label)
+        elif len(series) == 1:
+            y_col_name, _, _, _, _, _, r = series[0]
             r_str = f" (r={r:.3f})" if not math.isnan(r) else ""
-            y_label = escape(y_col_name) + r_str
+            axis_y_label = escape(y_col_name) + r_str
         else:
-            y_label = ""
-        if y_label:
-            els.append(f'<text transform="rotate(-90,16,{cy:.1f})" x="16" y="{cy:.1f}" text-anchor="middle" font-size="13" fill="#333">{y_label}</text>')
+            axis_y_label = ""
+        if axis_y_label:
+            els.append(f'<text transform="rotate(-90,16,{cy:.1f})" x="16" y="{cy:.1f}" text-anchor="middle" font-size="13" fill="#333">{axis_y_label}</text>')
         if title:
             els.append(f'<text x="{W/2:.1f}" y="24" text-anchor="middle" font-size="15" font-weight="bold" fill="#222">{escape(title)}</text>')
 
         cap = 4
-        for i, (y_col, xs_data, ys_data, x_errs, y_errs, _) in enumerate(series):
+        for i, (y_col, xs_data, ys_data, x_errs, y_errs, point_labels, _) in enumerate(series):
             color = COLORS[i % len(COLORS)]
             for j, (x, y) in enumerate(zip(xs_data, ys_data)):
                 px, py = to_svg(x, y)
@@ -404,10 +419,14 @@ td.mol svg {{ display: block; }}
                     els.append(f'<line x1="{px-cap:.1f}" y1="{y_top:.1f}" x2="{px+cap:.1f}" y2="{y_top:.1f}" stroke="{color}" stroke-opacity="0.55" stroke-width="1.2"/>')
                     els.append(f'<line x1="{px-cap:.1f}" y1="{y_bottom:.1f}" x2="{px+cap:.1f}" y2="{y_bottom:.1f}" stroke="{color}" stroke-opacity="0.55" stroke-width="1.2"/>')
                 els.append(f'<circle cx="{px:.1f}" cy="{py:.1f}" r="4" fill="{color}" fill-opacity="0.65" stroke="{color}" stroke-width="0.5"/>')
+                if point_labels:
+                    point_label = _plot_label_text(point_labels[j])
+                    if point_label:
+                        els.append(f'<text x="{px+6:.1f}" y="{py-6:.1f}" font-size="10" fill="#333" stroke="#fff" stroke-width="3" paint-order="stroke">{escape(point_label)}</text>')
 
         if len(series) > 1:
             lx, ly = ml + pw + 15, mt + 10
-            for i, (y_col, _, _, _, _, r) in enumerate(series):
+            for i, (y_col, _, _, _, _, _, r) in enumerate(series):
                 color = COLORS[i % len(COLORS)]
                 r_str = f"r={r:.3f}" if not math.isnan(r) else "r=N/A"
                 els.append(f'<rect x="{lx}" y="{ly + i*22}" width="12" height="12" fill="{color}" fill-opacity="0.8"/>')

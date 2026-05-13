@@ -84,4 +84,4 @@ Available `-P` alert sets: `Glaxo`, `Dundee`, `BMS`, `PAINS`, `SureChEMBL`, `MLS
 
 **`viz`**: Write an HTML table of SVG molecule images alongside dataframe columns and open it in the browser.
 
-**`plot`**: Scatter plot of columns matching `-x` (x axis) vs `-y` (y axis, repeatable), with optional error bars from `--xerr` and `--yerr`; shows Pearson R in legend. Use `-o/--output plot.png` to write a high-quality PNG instead of opening the browser.
+**`plot`**: Scatter plot of columns matching `-x` (x axis) vs `-y` (y axis, repeatable), with optional error bars from `--xerr` and `--yerr`; shows Pearson R in legend. Use `--labels/--label-col` to annotate points, `--xlabel`/`--ylabel` to override axis labels, and `-o/--output plot.png` to write a high-quality PNG instead of opening the browser.

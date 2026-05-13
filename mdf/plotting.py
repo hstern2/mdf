@@ -30,6 +30,17 @@ def _fmt_tick(v):
     return f"{v:.3g}"
 
 
+def _plot_label_text(value) -> str:
+    if value is None:
+        return ""
+    try:
+        if math.isnan(value):
+            return ""
+    except TypeError:
+        pass
+    return str(value).strip()
+
+
 def _open_html(doc: str):
     import tempfile, webbrowser
     with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False, encoding="utf-8") as f:
@@ -52,6 +63,8 @@ def _write_plot_png(
     colors,
     width_px: int,
     height_px: int,
+    x_label: str | None = None,
+    y_label: str | None = None,
 ):
     import matplotlib
 
@@ -76,9 +89,11 @@ def _write_plot_png(
     ax.set_yticks(y_ticks)
     ax.grid(True, color="#eeeeee", linewidth=0.8)
     ax.set_axisbelow(True)
-    ax.set_xlabel(x_col)
+    axis_x_label = x_label if x_label is not None else x_col
+    if axis_x_label:
+        ax.set_xlabel(axis_x_label)
 
-    for i, (y_col, xs_data, ys_data, x_errs, y_errs, r) in enumerate(series):
+    for i, (y_col, xs_data, ys_data, x_errs, y_errs, point_labels, r) in enumerate(series):
         color = colors[i % len(colors)]
         label = f"{y_col} ({r_text(r)})"
         ax.errorbar(
@@ -96,11 +111,30 @@ def _write_plot_png(
             markeredgewidth=0.5,
             label=label,
         )
+        if point_labels:
+            for x, y, point_label in zip(xs_data, ys_data, point_labels):
+                text = _plot_label_text(point_label)
+                if not text:
+                    continue
+                ax.annotate(
+                    text,
+                    (x, y),
+                    xytext=(4, 4),
+                    textcoords="offset points",
+                    fontsize=6,
+                    color="#333333",
+                    alpha=0.8,
+                    clip_on=True,
+                )
 
     if len(series) == 1:
-        y_col, _, _, _, _, r = series[0]
-        ax.set_ylabel(f"{y_col} ({r_text(r)})")
+        y_col, _, _, _, _, _, r = series[0]
+        axis_y_label = y_label if y_label is not None else f"{y_col} ({r_text(r)})"
+        if axis_y_label:
+            ax.set_ylabel(axis_y_label)
     else:
+        if y_label:
+            ax.set_ylabel(y_label)
         ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1), borderaxespad=0, frameon=False)
 
     if title:
