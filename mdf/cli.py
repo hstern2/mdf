@@ -138,6 +138,18 @@ def cols(
 
 
 @app.command()
+def drop(
+    pattern: str = Argument(help="Regex pattern to match column names"),
+    files: FilesType = FilesArg,
+    stdin_fmt: StdinFmtOpt = MDFFormat.csv,
+    stdout_fmt: StdoutFmtOpt = MDFFormat.csv,
+):
+    """drop columns matching the regex pattern"""
+    show_help_and_exit_if_nothing(files)
+    MDF.from_stdin_and_files(files, stdin_fmt).drop(pattern).write_file(sys.stdout, stdout_fmt)
+
+
+@app.command()
 def diverse(
     files: FilesType = FilesArg,
     smiles_col: str = Option(

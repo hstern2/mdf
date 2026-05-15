@@ -14,6 +14,20 @@ from .formats import CatHow, MDFFormat, MergeHow
 from .plotting import _fmt_tick, _nice_ticks, _open_html, _plot_label_text, _write_plot_png
 
 
+_SDF_MOLBLOCK_COLUMN = "__MOLBLOCK"
+
+
+def _has_3d_coords(mol) -> bool:
+    """Return True when a molecule has at least one non-zero Z coordinate."""
+    if mol.GetNumConformers() == 0:
+        return False
+    conf = mol.GetConformer()
+    return any(
+        abs(conf.GetAtomPosition(i).z) > 1e-8
+        for i in range(mol.GetNumAtoms())
+    )
+
+
 def format_number(value, digits: int):
     """Format a number to the specified number of significant digits"""
     if value is None or not isinstance(value, (int, float)):
@@ -127,7 +141,10 @@ class MDF:
             should_close = True
         try:
             if fmt == MDFFormat.csv:
-                self._df.write_csv(file)
+                if _SDF_MOLBLOCK_COLUMN in self.columns:
+                    self._df.drop(_SDF_MOLBLOCK_COLUMN).write_csv(file)
+                else:
+                    self._df.write_csv(file)
             elif fmt == MDFFormat.smi:
                 if "SMILES" not in self.columns:
                     print("Column 'SMILES' not found in dataframe", file=sys.stderr)
@@ -149,13 +166,21 @@ class MDF:
                     print("Column 'SMILES' not found in dataframe", file=sys.stderr)
                     raise typer.Exit(code=1)
                 title_col = self._infer_title_column()
-                skip = {"SMILES", "FILE"}
+                skip = {"SMILES", "FILE", _SDF_MOLBLOCK_COLUMN}
                 for row in self._df.iter_rows(named=True):
-                    smiles = row.get("SMILES", "")
-                    mol = Chem.MolFromSmiles(smiles) if smiles else None
+                    mol = None
+                    molblock = row.get(_SDF_MOLBLOCK_COLUMN)
+                    if molblock:
+                        mol = Chem.MolFromMolBlock(
+                            str(molblock), sanitize=True, removeHs=False
+                        )
+                    if mol is None:
+                        smiles = row.get("SMILES", "")
+                        mol = Chem.MolFromSmiles(smiles) if smiles else None
+                        if mol is not None:
+                            AllChem.Compute2DCoords(mol)
                     if mol is None:
                         continue
-                    AllChem.Compute2DCoords(mol)
                     title = self._title_value(row.get(title_col)) if title_col else ""
                     mol.SetProp("_Name", title)
                     file.write(Chem.MolToMolBlock(mol))
@@ -452,6 +477,10 @@ td.mol svg {{ display: block; }}
         """return a new mdf with only columns matching the regex pattern"""
         return MDF(self._df.select(self.matching_cols(pattern)))
 
+    def drop(self, pattern: str) -> "MDF":
+        """return a new mdf without columns matching the regex pattern"""
+        return MDF(self._df.drop(self.matching_cols(pattern)))
+
     def rename(self, from_pattern: str, to: str) -> "MDF":
         """rename the first column matching from_pattern to to"""
         cols = list(self.columns)
@@ -495,33 +524,38 @@ td.mol svg {{ display: block; }}
 
     @classmethod
     def from_sdf(cls, f):
-        """create mdf from SDF file; produces NAME, SMILES, FILE columns plus any SDF tags"""
+        """create mdf from SDF file; produces NAME, SMILES columns plus any SDF tags"""
         try:
-            from rdkit.Chem import SDMolSupplier, ForwardSDMolSupplier, MolToSmiles
+            from rdkit import Chem
         except ImportError as e:
             print(f"RDKit is required for SDF input: {e}", file=sys.stderr)
             raise typer.Exit(code=1)
 
         if isinstance(f, (str, Path)):
-            filename = str(f)
-            supplier = SDMolSupplier(filename)
+            supplier = Chem.SDMolSupplier(str(f), removeHs=False)
         else:
-            filename = getattr(f, "name", "<stdin>")
             data = f.read()
             if isinstance(data, str):
                 data = data.encode()
-            supplier = ForwardSDMolSupplier(io.BytesIO(data))
+            supplier = Chem.ForwardSDMolSupplier(io.BytesIO(data), removeHs=False)
 
         rows = []
         for m in supplier:
             if m is None:
                 continue
+            try:
+                smiles_mol = Chem.RemoveHs(m)
+            except Exception:
+                smiles_mol = m
             d = {
                 "NAME": m.GetProp("_Name") if m.HasProp("_Name") else "",
-                "SMILES": MolToSmiles(m),
-                "FILE": filename,
+                "SMILES": Chem.MolToSmiles(smiles_mol),
             }
-            d.update(m.GetPropsAsDict())
+            props = m.GetPropsAsDict()
+            props.pop(_SDF_MOLBLOCK_COLUMN, None)
+            d.update(props)
+            if _has_3d_coords(m):
+                d[_SDF_MOLBLOCK_COLUMN] = Chem.MolToMolBlock(m)
             rows.append(d)
         return cls(ps.DataFrame(rows))
 

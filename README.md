@@ -48,6 +48,8 @@ Available `-P` alert sets: `Glaxo`, `Dundee`, `BMS`, `PAINS`, `SureChEMBL`, `MLS
 
 **`cols`**: Print only columns matching the regex pattern.
 
+**`drop`**: Drop columns matching the regex pattern.
+
 **`uniq`**: Drop duplicates based on canonical SMILES from the specified column.
 
 **`recent`**: Keep only the most recent row for each NAME, based on the date column matching the regex pattern.
